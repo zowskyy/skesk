@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
 from skillkernel.core.config import load_config
@@ -182,7 +183,7 @@ def run_doctor(layout: Layout) -> DoctorReport:
 
     # --- registries ---------------------------------------------------------
     for name, registry in _domain_registries(layout):
-        check(f"registry:{name}")(lambda r=registry, n=name: _check_registry(report, n, r))  # type: ignore[misc]
+        check(f"registry:{name}")(partial(_check_registry, report, name, registry))
 
     # --- domain integrity ---------------------------------------------------
     check("evidence-ledger")(lambda: _check_evidence(report, layout))
