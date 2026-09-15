@@ -22,9 +22,13 @@ from pathlib import Path
 from typing import Any
 
 from skillkernel.core.clock import now_iso
-from skillkernel.core.errors import RecordNotFoundError, ValidationError
+from skillkernel.core.errors import (
+    LocationInvariantError,
+    RecordNotFoundError,
+    ValidationError,
+)
 from skillkernel.core.ids import SKILL
-from skillkernel.core.paths import Layout
+from skillkernel.core.paths import SKILL_FILENAME, Layout
 from skillkernel.registry import Registry
 from skillkernel.skills.history import (
     append_transition,
@@ -38,7 +42,6 @@ from skillkernel.utils.text import slugify
 
 __all__ = ["SKILL_FILENAME", "SkillStore", "skills_registry"]
 
-SKILL_FILENAME = "skill.yaml"
 HISTORY_FILENAME = "history.yaml"
 
 _HEADER = (
@@ -78,7 +81,8 @@ class SkillStore:
 
     # --- locations ---------------------------------------------------------
     def relative_skill_path(self, scope: str, slug: str) -> str:
-        return f"{scope}/{slug}/{SKILL_FILENAME}"
+        """Delegates to the single canonical computation on :class:`Layout`."""
+        return self.layout.relative_skill_path(scope, slug)
 
     def skill_dir(self, skill_id: str) -> Path:
         """The directory holding this skill's files."""
@@ -168,8 +172,7 @@ class SkillStore:
         )
         record = SkillRecord.from_document(document, source=skill_id)
 
-        relative = self.relative_skill_path(scope, resolved_slug)
-        directory = self.layout.require_inside(self.layout.skills_dir / scope / resolved_slug)
+        directory = self.layout.require_inside(self.layout.skill_path(scope, resolved_slug).parent)
         directory.mkdir(parents=True, exist_ok=True)
 
         # History first: an interruption leaves an unregistered directory, which
@@ -178,20 +181,72 @@ class SkillStore:
             directory / HISTORY_FILENAME,
             new_history_document(skill_id, at=timestamp, actor=created_by, reason="Skill created."),
         )
+        self._persist(record, expect_new=True)
+        return record
+
+    def _check_location_invariant(self, record: SkillRecord) -> str:
+        """Return the canonical path, or raise before anything is written.
+
+        A skill's location is derived from its declared scope and slug. If a
+        record being saved would land somewhere other than where it is already
+        registered, its identity has moved -- and moving it silently is what
+        allowed a second skill to occupy the same directory and overwrite the
+        first one's record and history.
+
+        Scope and slug are therefore immutable through ordinary persistence
+        (DEC-0011). Relocation is a deliberate, gated, recorded operation that
+        does not exist yet; ``save()`` is not it.
+        """
+        canonical = self.layout.relative_skill_path(record.scope, record.slug)
+        entry = self.registry.load_index().entries.get(record.id)
+        if entry is None or entry.path == canonical:
+            return canonical
+
+        registered = self.layout.parse_relative_skill_path(entry.path)
+        if registered is None:
+            raise LocationInvariantError(
+                f"{record.id} is registered at {entry.path}, which is not a canonical "
+                f"skill location. Expected {canonical}."
+            )
+        registered_scope, registered_slug = registered
+        moved = []
+        if registered_scope != record.scope:
+            moved.append(f"scope {registered_scope!r} -> {record.scope!r}")
+        if registered_slug != record.slug:
+            moved.append(f"slug {registered_slug!r} -> {record.slug!r}")
+        raise LocationInvariantError(
+            f"{record.id} cannot change its location-bearing identity through an "
+            f"ordinary save ({'; '.join(moved)}). It is stored at {entry.path}; the "
+            f"record being saved belongs at {canonical}. A skill's scope and slug are "
+            "immutable after creation, because moving one silently would let another "
+            "skill occupy its directory and overwrite its record and history. "
+            "Relocation requires an explicit gated operation, which does not exist yet."
+        )
+
+    def _persist(self, record: SkillRecord, *, expect_new: bool = False) -> SkillRecord:
+        """The single write path for a skill record.
+
+        The invariant is checked first, so a rejected save leaves the workspace
+        byte-identical: nothing has been written to undo.
+        """
+        canonical = self._check_location_invariant(record)
         self.registry.put(
-            skill_id,
+            record.id,
             record.raw,
             summary=record.summary_row(),
-            relative_path=relative,
-            expect_new=True,
+            relative_path=canonical,
+            expect_new=expect_new,
             header=_HEADER,
         )
         return record
 
     def save(self, record: SkillRecord) -> SkillRecord:
-        """Persist a record that already exists, keeping its registered path."""
-        self.registry.put(record.id, record.raw, summary=record.summary_row(), header=_HEADER)
-        return record
+        """Persist a record that already exists, at its canonical location.
+
+        Refuses a record whose declared scope or slug would move it. See
+        :meth:`_check_location_invariant`.
+        """
+        return self._persist(record)
 
     def update(self, skill_id: str, *, now: str | None = None, **fields: Any) -> SkillRecord:
         """Edit the editable fields of a skill.

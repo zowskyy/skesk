@@ -22,7 +22,15 @@ __all__ = ["CONFIG_FILENAME", "Layout", "find_root", "load_layout"]
 CONFIG_FILENAME = "skillkernel.yaml"
 
 SKILL_SCOPES = ("core", "project", "discovered")
-"""Directory-backed skill scopes. ``deprecated`` is a maturity, not a scope."""
+"""Directory-backed skill scopes. ``deprecated`` is a maturity, not a scope.
+
+Defined here rather than beside the skill schema because this is a *layout*
+fact: it names directories. Everything else imports it from here, so a
+location-bearing fact has exactly one definition.
+"""
+
+SKILL_FILENAME = "skill.yaml"
+"""The record file inside every skill directory."""
 
 
 @dataclass(frozen=True)
@@ -94,6 +102,40 @@ class Layout:
         if scope not in SKILL_SCOPES:
             raise ValueError(f"unknown skill scope {scope!r}; expected one of {SKILL_SCOPES}")
         return self.skills_dir / scope
+
+    # --- canonical skill location ------------------------------------------
+    #
+    # A skill's location is derived from two declared fields, its scope and its
+    # slug. This is the ONLY place that derivation happens: SkillStore and
+    # doctor call these and compare, they never re-derive a path themselves.
+    # Two computations of the same rule would be two sources of truth, which is
+    # the class of defect this exists to prevent.
+
+    def skill_path(self, scope: str, slug: str) -> Path:
+        """The canonical absolute location of a skill's record file."""
+        if not slug:
+            raise ValueError("a skill slug must not be empty")
+        return self.skill_scope_dir(scope) / slug / SKILL_FILENAME
+
+    def relative_skill_path(self, scope: str, slug: str) -> str:
+        """The canonical location, relative to the skills directory.
+
+        This is the form the skills registry stores, so it is directly
+        comparable with a registered path.
+        """
+        self.skill_scope_dir(scope)  # validates the scope
+        return f"{scope}/{slug}/{SKILL_FILENAME}"
+
+    def parse_relative_skill_path(self, relative: str) -> tuple[str, str] | None:
+        """Recover ``(scope, slug)`` from a registered path, or None if it is not canonical.
+
+        Used to describe a mismatch in terms a reader can act on: which identity
+        the stored location actually encodes.
+        """
+        parts = Path(relative).as_posix().split("/")
+        if len(parts) != 3 or parts[2] != SKILL_FILENAME or parts[0] not in SKILL_SCOPES:
+            return None
+        return parts[0], parts[1]
 
     def registry_file(self, domain_dir: Path) -> Path:
         return domain_dir / "registry" / "index.yaml"
