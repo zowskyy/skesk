@@ -23,3 +23,6 @@ files become the human projection of those records.
 | [DEC-0011](DEC-0011-skill-location-identity.md) | Accepted | A skill's location-bearing identity (`scope`, `slug`) is immutable through ordinary persistence |
 | [DEC-0012](DEC-0012-workspace-independent-doctor-output.md) | Accepted | Machine-readable doctor output is workspace-independent |
 | [DEC-0013](DEC-0013-canonical-path-components.md) | Accepted | Canonical path components are strictly validated |
+| [DEC-0014](DEC-0014-portable-skill-definition.md) | Accepted | A bundle is a portable definition; source provenance is an `x_source` extension field |
+| [DEC-0015](DEC-0015-bundle-installation-semantics.md) | Accepted (amends DEC-0004, DEC-0008) | Bundle installation semantics: local identity, `observed` on arrival, refusal over reconciliation |
+| [DEC-0016](DEC-0016-packaged-resource-integrity.md) | Accepted | Packaged resources via `importlib.resources`; the portable content hash |

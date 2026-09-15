@@ -137,14 +137,15 @@ their results are not comparable.
 | Type check | `.venv/bin/python -m mypy` |
 | Unit tests | `.venv/bin/python -m pytest tests/unit` |
 | Integration tests | `.venv/bin/python -m pytest tests/integration` (none exist yet) |
-| Acceptance tests | `.venv/bin/python -m pytest -m acceptance` (none exist yet) |
+| Acceptance tests | `.venv/bin/python -m pytest -m acceptance` |
 | Everything | `.venv/bin/python -m pytest` |
 
 ### The `skillkernel` command
 
 ```
-skillkernel init <path>      create a workspace (refuses to overwrite one)
-skillkernel doctor <path>    read-only integrity check; --json for a report
+skillkernel init <path>                       create a workspace (refuses to overwrite one)
+skillkernel doctor <path>                     read-only integrity check; --json for a report
+skillkernel skill install <bundle-id> [path]  install a bundled skill definition
 ```
 
 Exit codes (DEC-0010). `1` and `70` make different claims and must not be
@@ -154,7 +155,8 @@ incomplete and the workspace's true state is unknown.
 
 ```
 0   command completed successfully
-1   doctor completed and found an ERROR
+1   doctor found an ERROR, or a command was refused (a collision, a failed
+    integrity claim, an unknown bundle)
 2   command-line usage error
 3   target is not an initialized SkillKernel workspace
 70  unexpected internal software failure
