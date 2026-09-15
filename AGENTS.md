@@ -4,6 +4,17 @@ Operating instructions for agents working in this repository. This file is a
 **map**, not an encyclopedia — it points at the authoritative documents rather
 than restating them.
 
+It has two parts, deliberately separated:
+
+- **Part A — Universal agent rules.** Project-agnostic. Reusable verbatim in any
+  repository. Full text: [`docs/policies/universal-agent-rules.md`](docs/policies/universal-agent-rules.md).
+- **Part B — Project-specific rules.** Everything true only of SkillKernel.
+
+Keeping them apart is what lets the universal half be lifted into another
+project without dragging this project's assumptions along.
+
+---
+
 ## What this project is
 
 SkillKernel is a project-agnostic engineering intelligence layer. It stores
@@ -19,28 +30,94 @@ observation → hypothesis → experiment → evidence → knowledge
 The kernel is infrastructure. It must never encode the engineering methods of
 any one project; it is the mechanism that *learns* them.
 
-## Status
+**Status: Milestone 0 (foundation) is verified. No vertical slice is
+implemented yet.** Read `ARCHITECTURE.md` before assuming a capability exists —
+an absent module is absent on purpose.
 
-**Milestone 0 (foundation) is verified. No vertical slice is implemented yet.**
+---
 
-Read `ARCHITECTURE.md` before assuming a capability exists. It separates
-Implemented from Planned, and an absent module is absent on purpose.
+# Part A — Universal agent rules
 
-## Authoritative locations
+Summarized here because they are operational and must not require following a
+link to learn. The linked policy is authoritative where the two differ.
+
+## A1. Two-method escalation rule
+
+On any blocker, ambiguity, failing implementation, unexplained test failure or
+environment problem, you may attempt **at most two materially different
+solution methods**. After two, stop and ask.
+
+A method is a distinct technical approach — "repair the existing mechanism"
+then "use the supported alternative mechanism" is two methods. Retrying the same
+command, renaming a variable or tweaking the same patch is *one* method, and
+does not reset the counter. A retry for a purely transient cause (file lock,
+timeout) may be repeated once without counting.
+
+After Method 1 fails: inspect, diagnose *why*, record the evidence, then pick a
+genuinely different Method 2 and say what makes it different.
+
+After Method 2 fails: **stop**. Do not try a third, rewrite large portions,
+disable tests, weaken validation, remove safeguards, change acceptance criteria,
+or move on to unrelated work. Report using the escalation format in the policy
+document — problem, observed failure, both methods and why each failed, current
+repository state, best diagnosis separating *known* from *likely* from
+*unknown*, and the smallest question that unblocks you.
+
+Research — reading code, logs, history, documentation — does not count as an
+attempt. Investigate enough to make each method informed, but do not use
+investigation to avoid escalating.
+
+## A2. Stop immediately, before two attempts
+
+If proceeding would require destructive or irreversible changes, deleting user
+data, rewriting Git history, changing credentials, weakening security controls,
+changing stated acceptance criteria, using paid services where free-only is
+required, making a major architectural decision no existing decision record
+covers, or guessing user intent where competing readings give materially
+different systems.
+
+## A3. No false verification
+
+PASS / FAIL / SKIPPED / BLOCKED / NOT RUN are distinct. Never convert NOT RUN
+into PASS. Never infer project-wide success from targeted checks. "It looks
+correct" is not success. If still blocked after two methods, report
+**BLOCKED — USER INPUT REQUIRED**, not "done".
+
+## A4. No placeholder completion
+
+A TODO-only file, an empty function, `NotImplementedError`, a command faking
+success, or a result hardcoded to a fixture is not an implementation. Scan for
+new `TODO`, `FIXME`, `pass`, `NotImplemented`, `placeholder`, `stub` before
+reporting; inspect and explain every match. An empty directory asserts a
+capability that is not there — do not create one ahead of its code.
+
+## A5. Preserve user work
+
+Operate only inside this repository. Before stopping to ask: leave no
+experimental debris, revert failed changes where safe and clearly attributable,
+preserve the evidence that explains the problem, never revert unrelated work,
+and report any remaining dirty files.
+
+---
+
+# Part B — Project-specific rules
+
+## B1. Authoritative locations
 
 | Subject | Authoritative file |
 | --- | --- |
 | What is actually built | `ARCHITECTURE.md` |
-| Design decisions and their rationale | `docs/decisions/` |
+| Universal agent policy | `docs/policies/universal-agent-rules.md` |
+| Design decisions and rationale | `docs/decisions/` |
 | Verified baseline measurements | `docs/project/baseline-0001.md` |
 | Project facts (machine-readable) | `docs/project/profile.yaml` |
 | Kernel policy (thresholds, gates) | `skillkernel.yaml` |
 
 Each fact has exactly one authoritative home. If a document duplicates a fact
-that lives elsewhere, the other copy is wrong by construction — fix the
+that lives elsewhere, the other copy is wrong by construction — remove the
 duplication, do not sync it.
 
-## Setup
+## B2. Setup
 
 ```
 python3 -m venv .venv
@@ -49,9 +126,9 @@ python3 -m venv .venv
 
 All tooling runs through that one environment. Do not use user-level tool
 shims: they resolve to different interpreters and different tool versions, and
-results from them are not comparable.
+their results are not comparable.
 
-## Commands
+## B3. Commands
 
 | Purpose | Command |
 | --- | --- |
@@ -63,12 +140,9 @@ results from them are not comparable.
 | Acceptance tests | `.venv/bin/python -m pytest -m acceptance` (none exist yet) |
 | Everything | `.venv/bin/python -m pytest` |
 
-Tests must run offline. The kernel's correctness may not depend on any network
-service, model provider or remote database.
+## B4. Architectural invariants
 
-## Architectural invariants
-
-These are enforced by code and tests. Do not weaken one to make a change fit.
+Enforced by code and tests. Do not weaken one to make a change fit.
 
 1. **The kernel verifies; the proposer proposes.** Schemas, state transitions,
    evidence requirements, promotion gates and integrity checks are deterministic
@@ -85,54 +159,47 @@ These are enforced by code and tests. Do not weaken one to make a change fit.
 7. **The repository is the system of record.** Never rely on conversational
    memory for project knowledge.
 
-## Repository boundaries
+## B5. Project-specific stop conditions
 
-Operate only inside this repository. Do not modify global system
-configuration, install unrelated global packages, write secrets into
-repository files, or touch unrelated directories. Generated artifacts belong in
-their documented locations; transient data belongs under `.skillkernel/tmp/`,
-which is git-ignored.
+In addition to A2, stop and ask before:
 
-The evidence ledger refuses content matching credential shapes. If it refuses
-your record, redact the content — do not work around the guard.
+- adding a runtime dependency (PyYAML is currently the only one) — it needs a
+  decision record;
+- weakening a promotion gate, schema constraint or validator to make a test
+  pass;
+- hand-editing a registry index or record file to work around a missing API —
+  that is a missing capability to report, not an obstacle to route around;
+- disabling or narrowing the evidence-ledger credential guard;
+- making the kernel's correctness depend on a network service, model provider
+  or remote database (adapters may; the kernel may not);
+- changing a record schema without bumping `schema_version` and recording the
+  decision;
+- describing the evidence ledger as immutable — it provides tamper *evidence*
+  (`docs/decisions/DEC-0007`).
 
-## Definition of done
+## B6. Definition of done
 
-A change is done when all of the following hold, each actually executed:
+Each item actually executed, not assumed:
 
 - [ ] `ruff check` passes with no new blanket ignores
 - [ ] `ruff format --check` passes
 - [ ] `mypy` passes without broad `Any` or unscoped `# type: ignore`
 - [ ] tests pass, including negative cases for any new validation
-- [ ] no `TODO`, `FIXME`, `NotImplementedError`, placeholder or stub was
-      introduced without an explicit written justification
+- [ ] no placeholder introduced without written justification (A4)
 - [ ] documentation describes what was built, not what is planned
 - [ ] the working tree is clean
 
-## Reporting
+## B7. Recording experiments and evidence
 
-Report exactly what was executed. Distinguish **PASS / FAIL / SKIPPED /
-BLOCKED / NOT RUN**, and never convert NOT RUN into PASS. Targeted tests
-passing is not evidence that the project passes. If a milestone is incomplete,
-say so and name what is missing.
+Use the domain APIs, not hand-edited registry files. When something repeatedly
+fails, classify the gap — missing knowledge, tool, abstraction, test,
+validator, context, environment, skill, or an ambiguous specification — rather
+than escalating the prompt. Repeated failure classes are what discovery later
+turns into skill candidates.
 
-Do not report a milestone complete because files exist. Demonstrate the
-behaviour.
+## B8. Contradictory documentation
 
-## Recording experiments and evidence
-
-Use the domain APIs, not hand-edited registry files. If a task cannot be done
-through a public API, that is a missing capability worth reporting — not a
-reason to edit an index by hand.
-
-When something repeatedly fails, classify the gap (missing knowledge, tool,
-abstraction, test, validator, context, environment, skill, or an ambiguous
-specification) rather than escalating the prompt. Repeated failure classes are
-what discovery later turns into skill candidates.
-
-## Contradictory documentation
-
-If two documents disagree, the authoritative file in the table above wins.
-Correct the non-authoritative copy in the same change, and prefer deleting a
-duplicated fact over updating it in two places. If the authoritative source is
-itself wrong, fix it first and say so in the commit message.
+The authoritative file in B1 wins. Correct the non-authoritative copy in the
+same change, and prefer deleting a duplicated fact over updating it twice. If
+the authoritative source is itself wrong, fix it first and say so in the commit
+message.

@@ -17,3 +17,4 @@ files become the human projection of those records.
 | [DEC-0005](DEC-0005-generated-skill-docs.md) | Accepted | `skill.yaml` is authoritative; `SKILL.md` is generated |
 | [DEC-0006](DEC-0006-behavior-fingerprint.md) | Accepted | Behaviour fingerprint covers behavioural fields only |
 | [DEC-0007](DEC-0007-tamper-evidence.md) | Accepted | The evidence ledger provides tamper evidence, not immutability |
+| [DEC-0008](DEC-0008-universal-agent-policy.md) | Accepted (design) | Universal agent policy ships as a bundled core skill installed by `skillkernel init` |

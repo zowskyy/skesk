@@ -290,6 +290,10 @@ directory asserts a capability that is not there.
 - **Bundled core skills** — a small, high-confidence universal set. They will
   enter at `candidate`, not `validated`, because they carry no repository-local
   evidence. See `docs/decisions/DEC-0004-bundled-core-skills.md`.
+  The first intended member is the universal agent policy — the two-method
+  escalation rule and its companions — whose text already exists at
+  `docs/policies/universal-agent-rules.md` but which has no installer yet.
+  See `docs/decisions/DEC-0008-universal-agent-policy.md`.
 - **Cross-project promotion** — a discovered skill may become core only after
   independent validation in several distinct projects. Repeated use inside one
   project is not evidence of universality.
