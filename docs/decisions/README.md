@@ -19,3 +19,4 @@ files become the human projection of those records.
 | [DEC-0007](DEC-0007-tamper-evidence.md) | Accepted | The evidence ledger provides tamper evidence, not immutability |
 | [DEC-0008](DEC-0008-universal-agent-policy.md) | Accepted (design) | Universal agent policy ships as a bundled core skill installed by `skillkernel init` |
 | [DEC-0009](DEC-0009-slice1-gate-scope.md) | Accepted | Promotion gates check fields and evidence, not generated documents |
+| [DEC-0010](DEC-0010-cli-exit-codes.md) | Accepted | CLI exit-code doctrine; exit 70 for unexpected internal failure |
