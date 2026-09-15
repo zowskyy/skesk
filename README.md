@@ -30,8 +30,16 @@ initialize → knowledge → experiment (define, freeze, measure) → evidence
 → reload from disk → verify provenance
 ```
 
-There is still **no command-line interface**; the CLI is a later thin adapter
-over operations this slice has proven.
+A command-line interface now exists for the two commands that exercise the
+installed boundary:
+
+```
+skillkernel init <path>      create a workspace
+skillkernel doctor <path>    read-only integrity check (--json for a report)
+```
+
+Other commands remain unimplemented; each arrives only once the operation
+beneath it is proven.
 
 Milestone 0's foundation is frozen at tag **`skillkernel-m0-verified`** — see
 `docs/project/FREEZE-milestone-0.md` for its commit, measured results and
@@ -52,13 +60,15 @@ restart procedure.
 | Activation-boundary evaluation | Implemented, tested |
 | Promotion gates and engine | Implemented, tested |
 | Provenance verification | Implemented, tested |
-| Discovery, compiler, `doctor`, CLI | **Not implemented** |
+| Workspace health check (`doctor`) | Implemented, tested |
+| CLI (`init`, `doctor`) | Implemented, tested |
+| Discovery, compiler, other CLI commands | **Not implemented** |
 
 `ARCHITECTURE.md` is authoritative on this. Nothing above is inferred from the
 presence of a file or directory.
 
-Measured: 483 tests passing, ruff clean, mypy clean, reproducible from a clean
-checkout. See `docs/project/baseline-0001.md` for the frozen Milestone 0
+Measured: 534 tests passing, ruff clean, mypy clean, reproducible from a clean
+checkout including the installed console command. See `docs/project/baseline-0001.md` for the frozen Milestone 0
 baseline.
 
 ## Development setup

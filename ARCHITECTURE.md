@@ -287,9 +287,50 @@ artifacts and broken history chains.
 
 ---
 
+### 2.17 Health check — `skillkernel/validation/doctor.py`
+
+An *aggregator*. It owns no validation rules: every check delegates to a
+function that already exists and is tested elsewhere, because a second
+implementation of a rule is a second place for it to drift.
+
+Its exception boundary keeps two similar-looking failures rigorously apart:
+
+| Raised | Meaning | Becomes |
+| --- | --- | --- |
+| `SkillKernelError` | The kernel looked and found a problem. The report is trustworthy. | An `ERROR` finding |
+| any other `Exception` | The kernel failed while looking. An unknown number of checks never ran. | An `internal_error`, separate from findings |
+
+`BaseException` is deliberately not caught, so `KeyboardInterrupt` and
+`SystemExit` keep their normal semantics. A report with zero findings but a
+crashed validator is **not healthy** — it is *unknown*, and `is_complete` says
+so. `to_document()` carries no timestamps and no absolute paths, so it is
+byte-stable across runs and comparable across machines.
+
+### 2.18 CLI — `skillkernel/cli/`, `skillkernel/__main__.py`
+
+`argparse`, stdlib only. Two commands: `init` and `doctor`.
+
+Exit codes are DEC-0010. The CLI is an adapter — it formats and chooses exit
+codes, holding no domain logic — and that is enforced mechanically:
+`tests/unit/test_cli_contract.py` parses the AST of every CLI module and fails
+if it imports the registry, references `record_transition`/`promote`, writes
+directly, or catches `BaseException`.
+
+`python -m skillkernel` is a second surface onto the same adapter.
+
+**Why this exists as its own slice.** At the end of VS1 the repository had 483
+passing tests, clean lint and types, and a clean-checkout reproduction — while
+the command declared in `[project.scripts]` did not run at all, because
+`skillkernel/cli/` had been deleted during Milestone 0 and nothing ever executed
+what was installed. The acceptance suite now drives the generated console
+executable through `subprocess`, and a regression test reconstructs a broken
+entry point to prove that check would catch it.
+
+---
+
 ## 3. Verification
 
-483 tests, weighted by risk rather than by count. Negative and adversarial cases
+534 tests, weighted by risk rather than by count. Negative and adversarial cases
 are the majority.
 
 | Area | Tests |
@@ -297,6 +338,9 @@ are the majority.
 | Promotion gates (red-team) | 22 |
 | Slice 1 components | 36 |
 | Lifecycle acceptance (end to end) | 4 |
+| CLI boundary acceptance | 15 |
+| Doctor aggregation and exception boundary | 19 |
+| CLI adapter contract | 17 |
 | Schema engine | 68 |
 | Skill contract and fingerprint | 66 |
 | Maturity state machine | 51 |
@@ -336,6 +380,11 @@ Everything below is design intent. None of it exists in the tree; the
 corresponding directories were removed rather than left empty, because an empty
 directory asserts a capability that is not there.
 
+- **Scope/path integrity check** — nothing verifies that a skill's directory
+  agrees with its declared `classification.scope`. Scope separation is a named
+  invariant, so this is a genuine hole, deliberately deferred out of the CLI
+  slice so that boundary restoration and new validation semantics stay
+  separately attributable.
 - **Discovery** — deterministic candidate generation from repeated observations
   above configured thresholds. Generation is strictly separate from promotion.
 - **Skill compiler** — a self-contained consumable package whose provenance
@@ -345,15 +394,9 @@ directory asserts a capability that is not there.
   truth and `SKILL.md` a generated projection, so no fact has two mutable homes.
   Staleness, absence and manual modification must all be detectable.
   See `docs/decisions/DEC-0005-generated-skill-docs.md`.
-- **`skillkernel init`** — the full idempotent bootstrap. `initialize()` exists
-  (§2.12); what remains is idempotent re-run semantics, reporting created versus
-  preserved paths, and repairing a partial workspace.
-- **`skillkernel doctor`** — repository-wide integrity check reporting
-  ERROR/WARNING/INFO with a non-zero exit on invalid state. Several of its
-  checks already exist as library functions (`EvidenceLedger.verify`,
-  `ExperimentStore.verify`, `KnowledgeStore.lineage_issues`,
-  `Registry.orphan_record_files`, `verify_provenance`); `doctor` will aggregate
-  them.
+- **`skillkernel init --repair`** — `init` exists (§2.18) and refuses to
+  overwrite an existing workspace. What remains is repairing a *partial*
+  workspace and reporting created versus preserved paths.
 - **CLI** — thin wrappers over the domain APIs. No business logic in command
   handlers. Commands will be added only once the operation beneath them exists.
 - **Bundled core skills** — a small, high-confidence universal set. They will

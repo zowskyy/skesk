@@ -140,6 +140,30 @@ their results are not comparable.
 | Acceptance tests | `.venv/bin/python -m pytest -m acceptance` (none exist yet) |
 | Everything | `.venv/bin/python -m pytest` |
 
+### The `skillkernel` command
+
+```
+skillkernel init <path>      create a workspace (refuses to overwrite one)
+skillkernel doctor <path>    read-only integrity check; --json for a report
+```
+
+Exit codes (DEC-0010). `1` and `70` make different claims and must not be
+conflated: `1` means the checks ran and found a problem, so the report is
+trustworthy; `70` means the kernel itself broke while checking, so the report is
+incomplete and the workspace's true state is unknown.
+
+```
+0   command completed successfully
+1   doctor completed and found an ERROR
+2   command-line usage error
+3   target is not an initialized SkillKernel workspace
+70  unexpected internal software failure
+```
+
+The CLI is an adapter: it formats output and chooses exit codes, and holds no
+domain logic. `tests/unit/test_cli_contract.py` enforces that by parsing its
+AST, so reaching past the boundary fails the suite rather than a review.
+
 ## B4. Architectural invariants
 
 Enforced by code and tests. Do not weaken one to make a change fit.
