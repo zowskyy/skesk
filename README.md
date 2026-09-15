@@ -19,7 +19,12 @@ learns a project's engineering methods; it does not contain any project's
 methods itself. The same kernel should serve an animation studio, a website and
 an unrelated future repository while each develops a different skill library.
 
-## Status: Milestone 0 — foundation verified
+## Status: Milestone 0 — foundation verified (frozen)
+
+Frozen at tag **`skillkernel-m0-verified`**. See
+`docs/project/FREEZE-milestone-0.md` for the commit hash, measured results,
+tool versions and restart procedure. Resume work by branching from that tag,
+not by committing onto it.
 
 The domain layer is implemented, tested and type-checked. **No end-to-end
 vertical slice runs yet**, and there is no command-line interface.
