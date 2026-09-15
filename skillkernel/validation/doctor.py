@@ -30,6 +30,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from skillkernel.core.config import load_config
@@ -46,6 +47,31 @@ from skillkernel.skills.store import SkillStore, skills_registry
 from skillkernel.validation.provenance import verify_provenance
 
 __all__ = ["DoctorReport", "Finding", "run_doctor"]
+
+WORKSPACE_TOKEN = "<workspace>"
+"""Stands in for the workspace root in machine-readable output.
+
+Machine-readable doctor output is workspace-independent (DEC-0012): two
+equivalent workspaces under different absolute roots must produce identical
+reports. Lower-level exceptions keep their absolute paths, which are useful in
+a traceback; normalization happens here, at the boundary that makes the claim.
+"""
+
+
+def normalize_workspace_paths(text: str, root: Path | None) -> str:
+    """Replace a known workspace root with :data:`WORKSPACE_TOKEN`.
+
+    Targeted at the specific root this report describes, in both its literal
+    and resolved forms, rather than pattern-matching anything path-shaped.
+    """
+    if root is None:
+        return text
+    normalized = text
+    for form in sorted({str(root), str(root.resolve())}, key=len, reverse=True):
+        if form and form not in ("/", "\\"):
+            normalized = normalized.replace(form, WORKSPACE_TOKEN)
+    return normalized
+
 
 ERROR = "ERROR"
 WARNING = "WARNING"
@@ -90,6 +116,7 @@ class DoctorReport:
 
     findings: list[Finding] = field(default_factory=list)
     internal_errors: list[Finding] = field(default_factory=list)
+    workspace_root: Path | None = None
 
     @property
     def errors(self) -> list[Finding]:
@@ -109,7 +136,25 @@ class DoctorReport:
         return not self.internal_errors
 
     def add(self, severity: str, code: str, location: str, message: str) -> None:
-        self.findings.append(Finding(severity, code, location, message))
+        """Record a finding, normalizing any workspace-root path it carries."""
+        self.findings.append(
+            Finding(
+                severity,
+                code,
+                normalize_workspace_paths(location, self.workspace_root),
+                normalize_workspace_paths(message, self.workspace_root),
+            )
+        )
+
+    def add_internal_error(self, check_name: str, message: str) -> None:
+        self.internal_errors.append(
+            Finding(
+                severity=ERROR,
+                code="internal_error",
+                location=check_name,
+                message=normalize_workspace_paths(message, self.workspace_root),
+            )
+        )
 
     def sorted_findings(self) -> list[Finding]:
         return sorted(self.findings, key=Finding.sort_key)
@@ -172,7 +217,7 @@ def _domain_registries(layout: Layout) -> Iterator[tuple[str, Registry]]:
 
 def run_doctor(layout: Layout) -> DoctorReport:
     """Aggregate every existing validator into one report."""
-    report = DoctorReport()
+    report = DoctorReport(workspace_root=layout.root)
 
     def check(name: str) -> Callable[[Callable[[], None]], None]:
         return _guard(report, name)
@@ -190,6 +235,7 @@ def run_doctor(layout: Layout) -> DoctorReport:
     check("experiments")(lambda: _check_experiments(report, layout))
     check("knowledge-lineage")(lambda: _check_knowledge(report, layout))
     check("skills")(lambda: _check_skills(report, layout))
+    check("skill-location")(lambda: _check_skill_locations(report, layout))
 
     return report
 
@@ -260,3 +306,54 @@ def _check_skills(report: DoctorReport, layout: Layout) -> None:
             report.add(ERROR, "skill-history", skill_id, issue)
         for issue in verify_provenance(layout, skill_id).findings:
             report.add(ERROR, "skill-provenance", skill_id, issue)
+
+
+def _check_skill_locations(report: DoctorReport, layout: Layout) -> None:
+    """Detect a skill whose declared identity disagrees with where it is stored.
+
+    A safety net for workspaces corrupted before this check existed, or by a
+    stray editor. Enforcement lives at the persistence boundary in
+    :class:`~skillkernel.skills.store.SkillStore`; this only reports, and never
+    repairs, moves or normalizes anything.
+    """
+    store = SkillStore(layout)
+    index = store.registry.load_index()
+
+    # Duplicate ownership is derived from the index alone, before any record is
+    # read. A corrupted record must not stop this from being reported -- and
+    # when two skills share a directory, at least one of them is unreadable by
+    # construction, so a load-first ordering would hide exactly the case that
+    # matters most.
+    owners: dict[str, list[str]] = {}
+    for skill_id, entry in index.entries.items():
+        owners.setdefault(entry.path, []).append(skill_id)
+    for path, ids in sorted(owners.items()):
+        if len(ids) > 1:
+            report.add(
+                ERROR,
+                "skill-location",
+                path,
+                f"is registered to more than one skill ({', '.join(sorted(ids))}); "
+                "only one skill may own a location, and the others' records and "
+                "history have almost certainly been overwritten.",
+            )
+
+    # Per-skill checks are isolated: an unreadable record is already reported by
+    # the registry check, and must not abort the remaining skills.
+    for skill_id in sorted(index.entries):
+        entry = index.entries[skill_id]
+        try:
+            skill = store.get(skill_id)
+        except SkillKernelError:
+            continue
+        canonical = layout.relative_skill_path(skill.scope, skill.slug)
+        if entry.path != canonical:
+            report.add(
+                ERROR,
+                "skill-location",
+                skill_id,
+                f"is stored at {entry.path}, but its declared scope "
+                f"{skill.scope!r} and slug {skill.slug!r} place it at {canonical}. "
+                "The record and its location disagree, so another skill could occupy "
+                "that directory and overwrite this one.",
+            )

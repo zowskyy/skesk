@@ -246,6 +246,19 @@ mutation the design forbids.
 `observed`, and **end at the skill's current maturity** — so editing a maturity
 into `skill.yaml` by hand is detectable rather than invisible.
 
+**Location-bearing identity is immutable.** A skill's canonical location is
+`skills/<scope>/<slug>/skill.yaml`, computed solely by `Layout`. Persistence
+refuses a record whose declared `classification.scope` or `slug` would move it,
+and the check precedes the first write, so a rejection leaves the workspace
+byte-identical.
+
+This is not tidiness. Before VS3, mutating either field left the record
+registered at its old path, which freed the `(scope, slug)` pair, which let a
+second skill be created in the same directory and silently overwrite the first
+one's record and history — destroying its provenance, detected only by a later
+read. Relocation is a future gated operation; `save()` is not it.
+See `docs/decisions/DEC-0011-skill-location-identity.md`.
+
 ### 2.14 Evaluation — `skillkernel/evaluation/`
 
 Deterministic, model-free scoring of a skill's activation boundaries.
@@ -303,8 +316,24 @@ Its exception boundary keeps two similar-looking failures rigorously apart:
 `BaseException` is deliberately not caught, so `KeyboardInterrupt` and
 `SystemExit` keep their normal semantics. A report with zero findings but a
 crashed validator is **not healthy** — it is *unknown*, and `is_complete` says
-so. `to_document()` carries no timestamps and no absolute paths, so it is
-byte-stable across runs and comparable across machines.
+so.
+
+`to_document()` carries no timestamps, and workspace-root paths are normalized
+to a `<workspace>` token as findings are added, so the report is byte-stable
+across runs and comparable across machines.
+
+*That last property was claimed in VS2 but not delivered.* An `IntegrityError`
+from `Registry.load` embeds an absolute path, and `doctor` stored the exception
+text verbatim; VS2's test only exercised a healthy workspace, where no such
+message arises. VS3 normalizes at the report boundary and tests the error path
+under two different roots. Lower-level exceptions keep their absolute paths,
+which are what a traceback needs. See
+`docs/decisions/DEC-0012-workspace-independent-doctor-output.md`.
+
+doctor also detects a stored scope/slug mismatch and any location registered to
+more than one skill. It reports and never repairs: enforcement lives at the
+persistence boundary, and a test asserts a corrupted workspace is byte-identical
+after a run.
 
 ### 2.18 CLI — `skillkernel/cli/`, `skillkernel/__main__.py`
 
@@ -330,7 +359,7 @@ entry point to prove that check would catch it.
 
 ## 3. Verification
 
-534 tests, weighted by risk rather than by count. Negative and adversarial cases
+596 tests, weighted by risk rather than by count. Negative and adversarial cases
 are the majority.
 
 | Area | Tests |
@@ -341,6 +370,9 @@ are the majority.
 | CLI boundary acceptance | 15 |
 | Doctor aggregation and exception boundary | 19 |
 | CLI adapter contract | 17 |
+| Skill location invariant | 42 |
+| Doctor path normalization | 11 |
+| Location acceptance (end to end) | 9 |
 | Schema engine | 68 |
 | Skill contract and fingerprint | 66 |
 | Maturity state machine | 51 |
@@ -380,11 +412,10 @@ Everything below is design intent. None of it exists in the tree; the
 corresponding directories were removed rather than left empty, because an empty
 directory asserts a capability that is not there.
 
-- **Scope/path integrity check** — nothing verifies that a skill's directory
-  agrees with its declared `classification.scope`. Scope separation is a named
-  invariant, so this is a genuine hole, deliberately deferred out of the CLI
-  slice so that boundary restoration and new validation semantics stay
-  separately attributable.
+- **Skill relocation / cross-project promotion** — a skill's scope is now
+  immutable (DEC-0011), so there is deliberately no way to move one. Changing a
+  skill's scope requires an explicit, evidence-gated, recorded operation that
+  does not exist yet.
 - **Discovery** — deterministic candidate generation from repeated observations
   above configured thresholds. Generation is strictly separate from promotion.
 - **Skill compiler** — a self-contained consumable package whose provenance

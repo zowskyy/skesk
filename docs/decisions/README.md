@@ -20,3 +20,5 @@ files become the human projection of those records.
 | [DEC-0008](DEC-0008-universal-agent-policy.md) | Accepted (design) | Universal agent policy ships as a bundled core skill installed by `skillkernel init` |
 | [DEC-0009](DEC-0009-slice1-gate-scope.md) | Accepted | Promotion gates check fields and evidence, not generated documents |
 | [DEC-0010](DEC-0010-cli-exit-codes.md) | Accepted | CLI exit-code doctrine; exit 70 for unexpected internal failure |
+| [DEC-0011](DEC-0011-skill-location-identity.md) | Accepted | A skill's location-bearing identity (`scope`, `slug`) is immutable through ordinary persistence |
+| [DEC-0012](DEC-0012-workspace-independent-doctor-output.md) | Accepted | Machine-readable doctor output is workspace-independent |

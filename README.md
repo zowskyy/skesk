@@ -67,7 +67,7 @@ restart procedure.
 `ARCHITECTURE.md` is authoritative on this. Nothing above is inferred from the
 presence of a file or directory.
 
-Measured: 534 tests passing, ruff clean, mypy clean, reproducible from a clean
+Measured: 596 tests passing, ruff clean, mypy clean, reproducible from a clean
 checkout including the installed console command. See `docs/project/baseline-0001.md` for the frozen Milestone 0
 baseline.
 
