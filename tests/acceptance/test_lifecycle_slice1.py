@@ -26,7 +26,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from skillkernel.core.errors import GateError
 from skillkernel.core.paths import Layout
 from skillkernel.evaluation.runner import evaluate_skill
@@ -79,7 +78,9 @@ def record_knowledge(layout: Layout) -> str:
     """Step 2 — a claim about reality."""
     store = KnowledgeStore(layout)
     record = store.add(
-        statement="Import order affects test outcomes when modules mutate global state at import time.",
+        statement=(
+            "Import order affects test outcomes when modules mutate global state at import time."
+        ),
         scope=f"project:{PROJECT}",
         source_type="project_observation",
     )
@@ -153,7 +154,10 @@ def test_complete_lifecycle_from_empty_directory(tmp_path: Path, frozen_now: str
     skill = skills.create(
         name=SKILL_NAME,
         scope="project",
-        purpose="Pin import order so suites that mutate global state at import time run deterministically.",
+        purpose=(
+            "Pin import order so suites that mutate global state at import time "
+            "run deterministically."
+        ),
         applies_when=["a test failure reproduces only under some import orders"],
         do_not_apply_when=["debugging interactively, where changing import order hides the fault"],
         activation_rules=ACTIVATION,
@@ -167,6 +171,12 @@ def test_complete_lifecycle_from_empty_directory(tmp_path: Path, frozen_now: str
     assert skill.maturity == "candidate"
 
     # 6. Experimental — requires a procedure and experiment evidence -----------
+    #
+    # All behavioural content is authored HERE, before evaluation. That ordering
+    # is not incidental: the evaluation is stamped with the skill's behaviour
+    # fingerprint, so editing any behavioural field afterwards invalidates it.
+    # The gate enforces this, which makes "finish the skill, then evaluate it"
+    # the only workable authoring order.
     skills.update(
         skill.id,
         procedure=[
@@ -174,6 +184,9 @@ def test_complete_lifecycle_from_empty_directory(tmp_path: Path, frozen_now: str
             "Pin their import order in the suite's conftest.",
             "Re-run the suite to confirm the flake is gone.",
         ],
+        success_conditions=["The suite passes on ten consecutive runs."],
+        failure_modes=["Pinning hides a genuine ordering dependency that should be fixed instead."],
+        verification=["Run the suite ten times and confirm no failures."],
     )
     skills.attach_evidence(
         skill.id, experiments=[experiment_id], knowledge=[knowledge_id], records=[evidence.id]
@@ -205,12 +218,8 @@ def test_complete_lifecycle_from_empty_directory(tmp_path: Path, frozen_now: str
     assert report.evidence_id is not None
 
     # 8. Promote to validated --------------------------------------------------
-    skills.update(
-        skill.id,
-        success_conditions=["The suite passes on ten consecutive runs."],
-        failure_modes=["Pinning hides a genuine ordering dependency that should be fixed instead."],
-        verification=["Run the suite ten times and confirm no failures."],
-    )
+    # No content changes here: the evaluation above must still describe this
+    # exact skill, or the gate will refuse it.
     skill = engine.promote(
         skill.id, "validated", reason="Evaluation passed on activation-corpus-a.", actor=ACTOR
     )
@@ -268,14 +277,13 @@ def test_promotion_to_validated_is_refused_without_an_evaluation(
     engine.promote(skill.id, "candidate", reason="Applicability established.", actor=ACTOR)
     skills.update(skill.id, procedure=["Pin the import order."])
     skills.attach_evidence(skill.id, experiments=[experiment_id], knowledge=[knowledge_id])
-    engine.promote(skill.id, "experimental", reason="Procedure recorded.", actor=ACTOR)
-
     skills.update(
         skill.id,
         success_conditions=["The suite passes."],
         failure_modes=["Hides a real ordering bug."],
         verification=["Re-run the suite."],
     )
+    engine.promote(skill.id, "experimental", reason="Procedure recorded.", actor=ACTOR)
 
     with pytest.raises(GateError) as excinfo:
         engine.promote(skill.id, "validated", reason="No evaluation was run.", actor=ACTOR)

@@ -1,10 +1,11 @@
 """Shared fixtures.
 
-The fixtures below build a SkillKernel repository using only public APIs
-(``Layout``, ``write_config``, ``Registry.create``). There is no ``skillkernel
-init`` yet, and tests must not reach into registry internals to compensate --
-the moment a test needs to hand-edit an index to set up, that is a signal the
-public API is missing something.
+The ``layout`` fixture calls the real :func:`skillkernel.project.bootstrap.initialize`.
+It used to hand-roll the same steps, which meant every test was set up by
+something no real consumer would ever run. Deleting that duplication is part of
+what Vertical Slice 1 bought: the fixture now exercises the same entry point a
+user does, so a bug in initialization fails the suite instead of hiding behind
+it.
 """
 
 from __future__ import annotations
@@ -12,12 +13,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from skillkernel.core.config import default_config_document, write_config
 from skillkernel.core.paths import Layout
 from skillkernel.discovery.observations import ObservationStore
 from skillkernel.evidence.ledger import EvidenceLedger
 from skillkernel.experiments.store import ExperimentStore
 from skillkernel.knowledge.store import KnowledgeStore
+from skillkernel.project.bootstrap import initialize
+from skillkernel.skills.store import SkillStore
 
 FROZEN_NOW = "2024-01-31T12:00:00Z"
 LATER = "2024-02-01T12:00:00Z"
@@ -33,15 +35,7 @@ def frozen_now(monkeypatch: pytest.MonkeyPatch) -> str:
 @pytest.fixture
 def layout(tmp_path: Path, frozen_now: str) -> Layout:
     """An initialized, empty SkillKernel repository in a temporary directory."""
-    built = Layout(root=tmp_path)
-    for directory in built.managed_directories():
-        directory.mkdir(parents=True, exist_ok=True)
-    write_config(built, default_config_document("0.1.0-test"))
-    KnowledgeStore(built).registry.create()
-    ExperimentStore(built).registry.create()
-    EvidenceLedger(built).registry.create()
-    ObservationStore(built).registry.create()
-    return built
+    return initialize(tmp_path / "workspace", project_name="fixture-project", now=frozen_now)
 
 
 @pytest.fixture
@@ -62,3 +56,8 @@ def ledger(layout: Layout) -> EvidenceLedger:
 @pytest.fixture
 def observations(layout: Layout) -> ObservationStore:
     return ObservationStore(layout)
+
+
+@pytest.fixture
+def skills(layout: Layout) -> SkillStore:
+    return SkillStore(layout)
