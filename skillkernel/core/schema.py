@@ -36,6 +36,7 @@ __all__ = [
     "object_spec",
     "str_spec",
     "timestamp_spec",
+    "validate_value",
 ]
 
 UnknownPolicy = Literal["reject", "allow_extension", "allow"]
@@ -424,3 +425,21 @@ class Schema:
 
 def format_issues(issues: Sequence[Issue]) -> list[str]:
     return [str(issue) for issue in issues]
+
+
+def validate_value(value: Any, spec: Spec, *, source: str, path: str = "") -> Any:
+    """Validate one value against a bare :class:`Spec`.
+
+    :class:`Schema` validates a *document*, and so requires a ``schema_version``
+    at its root. Some structures are not documents: a nested extension block
+    lives inside a record that already carries a version, and giving it a second
+    one would version the same file twice. This is the entry point for those,
+    and it uses exactly the same dispatch, so a nested block gets the same type
+    rules, the same unknown-field policy and the same dotted-path diagnostics as
+    any other object.
+    """
+    issues: list[Issue] = []
+    _validate(value, spec, path, issues)
+    if issues:
+        raise ValidationError(f"invalid value in {source}", [str(issue) for issue in issues])
+    return value

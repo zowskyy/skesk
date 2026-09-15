@@ -1,0 +1,86 @@
+# SkillKernel portable skill bundle.
+#
+# An immutable portable DEFINITION. It carries what this skill tells a consumer
+# to do and the static cases that let a workspace evaluate it. It carries no
+# workspace identifier, maturity, confidence, evidence, experiments, evaluation
+# results, fingerprints, history or timestamps: those are earned in the
+# receiving workspace.
+#
+# Source of the definition: docs/policies/universal-agent-rules.md (DEC-0008).
+schema_version: 1
+
+bundle_id: two-method-escalation
+bundle_version: 1.0.0
+content_hash: sha256:c01b6eaa62fafa96d77a6c7e0d81246ebb35c72a5d2e24f98f95ca6ff1736abd
+
+name: Two-method escalation
+slug: two-method-escalation
+scope: core
+
+purpose: >-
+  Cap autonomous recovery at two materially different methods, then stop and
+  ask, so that a blocked agent escalates with evidence instead of thrashing.
+
+applies_when:
+  - a blocker, ambiguity or unexplained failure cannot be confidently resolved
+  - a second materially different method has failed
+  - competing readings of a requirement would produce materially different systems
+
+do_not_apply_when:
+  - work is progressing normally, however difficult
+  - the first method has not yet concluded
+  - the failure is transient and the same approach has not been retried once
+
+activation_rules:
+  require_any:
+    - blocked
+    - second-method-failed
+    - ambiguous-requirement
+  require_all: []
+  exclude_any:
+    - routine-progress
+    - first-attempt-underway
+
+inputs:
+  - the failing command, test or operation
+  - the observed error or evidence of failure
+
+preconditions:
+  - the failure has been observed directly rather than assumed
+
+procedure:
+  - Investigate the failure until you can state why it happened.
+  - "Attempt Method 1: a coherent technical approach."
+  - >-
+    If it fails, diagnose why, record the evidence, and choose a materially
+    different Method 2.
+  - If Method 2 fails, STOP. Do not attempt a third method.
+  - >-
+    Report all eight sections: problem; observed failure as evidence; Method 1
+    and why it failed; Method 2 and why it failed; current repository state and
+    the files changed; best diagnosis, separating known from likely from
+    unknown; the smallest specific question that unblocks you; and a recommended
+    next move.
+  - Wait for direction before proceeding. Do not execute the recommended move.
+
+success_conditions:
+  - The agent stopped after at most two materially different methods.
+  - The escalation report contains all eight required sections.
+
+failure_modes:
+  - Three variants of one approach are presented as three distinct methods.
+  - Research is used indefinitely to postpone escalating.
+  - The agent escalates on ordinary difficulty, training the user to ignore it.
+
+verification:
+  - Check the report names both methods and why each failed.
+  - Check the diagnosis separates known from likely from unknown.
+
+evaluation:
+  corpus_id: escalation-activation
+  pass_threshold: 1.0
+  max_false_activation_rate: 0.0
+  description: >-
+    Does the rule fire on a genuine blocker and stay quiet on ordinary work?
+    Over-activation is the dangerous direction: a rule that escalates on
+    difficulty trains the user to ignore it.
