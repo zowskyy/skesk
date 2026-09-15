@@ -13,17 +13,18 @@ rather than pretending otherwise.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from skillkernel.core.errors import UnsafeOperationError, ValidationError
 from skillkernel.core.paths import Layout
 from skillkernel.core.yamlio import load_yaml_file, write_yaml_file
 from skillkernel.evidence.ledger import EvidenceLedger
-from skillkernel.evidence.model import chain_hash
+from skillkernel.evidence.model import EvidenceRecord, chain_hash
 
 
-def add(ledger: EvidenceLedger, summary: str = "a run", **kwargs: object) -> object:
-    defaults: dict[str, object] = {
+def add(ledger: EvidenceLedger, summary: str = "a run", **kwargs: Any) -> EvidenceRecord:
+    defaults: dict[str, Any] = {
         "kind": "command_output",
         "summary": summary,
         "project": "demo",
@@ -31,7 +32,7 @@ def add(ledger: EvidenceLedger, summary: str = "a run", **kwargs: object) -> obj
         "source_detail": "pytest -q",
     }
     defaults.update(kwargs)
-    return ledger.record(**defaults)  # type: ignore[arg-type]
+    return ledger.record(**defaults)
 
 
 def problems(ledger: EvidenceLedger) -> str:
@@ -81,7 +82,7 @@ def test_identical_content_produces_a_different_hash_at_a_different_position(
     """Position is part of the hash, so records cannot be swapped undetected."""
     first = add(ledger, "identical")
     second = add(ledger, "identical")
-    assert first.chain["hash"] != second.chain["hash"]  # type: ignore[attr-defined]
+    assert first.chain["hash"] != second.chain["hash"]
 
 
 # --- tampering with history ------------------------------------------------
