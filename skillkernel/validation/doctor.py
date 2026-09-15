@@ -33,6 +33,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from skillkernel.bundles.model import SOURCE_FIELD, validate_x_source
 from skillkernel.core.config import load_config
 from skillkernel.core.errors import SkillKernelError
 from skillkernel.core.paths import Layout
@@ -236,6 +237,7 @@ def run_doctor(layout: Layout) -> DoctorReport:
     check("knowledge-lineage")(lambda: _check_knowledge(report, layout))
     check("skills")(lambda: _check_skills(report, layout))
     check("skill-location")(lambda: _check_skill_locations(report, layout))
+    check("skill-source")(lambda: _check_skill_sources(report, layout))
 
     return report
 
@@ -375,3 +377,32 @@ def _check_skill_locations(report: DoctorReport, layout: Layout) -> None:
                 "The record and its location disagree, so another skill could occupy "
                 "that directory and overwrite this one.",
             )
+
+
+def _check_skill_sources(report: DoctorReport, layout: Layout) -> None:
+    """Validate the source provenance of any skill that claims one.
+
+    ``provenance.x_source`` is written only by the bundle installer, but the
+    record is a plain file a person can edit. This is the read-side half of the
+    same contract: a record claiming a source shape the installer would never
+    have produced is reported, so an unaudited or hand-forged provenance claim
+    cannot pass as a real one.
+
+    A skill with no ``x_source`` is not a finding. Most skills are authored
+    locally and have no external source to declare.
+    """
+    store = SkillStore(layout)
+    # Per-skill isolation: an unreadable record is already reported by the
+    # registry check, and must not stop the remaining skills from being checked.
+    for skill_id in sorted(store.ids()):
+        try:
+            skill = store.get(skill_id)
+        except SkillKernelError:
+            continue
+        declared = skill.provenance.get(SOURCE_FIELD)
+        if declared is None:
+            continue
+        try:
+            validate_x_source(declared, source=skill_id)
+        except SkillKernelError as exc:
+            report.add(ERROR, "skill-source", skill_id, str(exc))

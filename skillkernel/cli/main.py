@@ -10,11 +10,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TextIO
 
 from skillkernel import __version__
+from skillkernel.bundles.installer import InstallResult, install_bundle_by_id
 from skillkernel.cli.exit_codes import (
     INTEGRITY_FAILURE,
     INTERNAL_ERROR,
@@ -68,6 +69,31 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser.add_argument(
         "--json", action="store_true", dest="as_json", help="emit a deterministic JSON report"
     )
+
+    skill_parser = subparsers.add_parser(
+        "skill",
+        help="work with the skills in a workspace",
+        description="Operations on a workspace's skills.",
+    )
+    # Required: "skillkernel skill" alone is a usage error, and argparse reports
+    # it the same way it reports any unknown command, with the same exit code.
+    skill_subparsers = skill_parser.add_subparsers(
+        dest="skill_command", metavar="<subcommand>", required=True
+    )
+
+    install_parser = skill_subparsers.add_parser(
+        "install",
+        help="install a bundled skill definition into a workspace",
+        description=(
+            "Install a skill definition shipped with SkillKernel. The workspace "
+            "allocates its own identifier, the skill starts at maturity 'observed' "
+            "like any other, and no evidence, maturity or history is imported: those "
+            "are earned locally. An existing skill is never overwritten, merged or "
+            "renamed -- a collision is refused."
+        ),
+    )
+    install_parser.add_argument("bundle", help="identifier of the bundled skill to install")
+    install_parser.add_argument("path", type=Path, nargs="?", default=Path.cwd())
     return parser
 
 
@@ -99,13 +125,7 @@ def render_doctor(report: DoctorReport, path: Path, out: TextIO) -> None:
 
 def command_doctor(args: argparse.Namespace, out: TextIO) -> int:
     target = Path(args.path)
-    if not is_initialized(target):
-        raise NotInitializedError(
-            f"{target} is not an initialized SkillKernel workspace "
-            f"(no {CONFIG_FILENAME}); run 'skillkernel init {target}' first"
-        )
-
-    report = run_doctor(Layout(root=target.resolve()))
+    report = run_doctor(require_workspace(target))
 
     if args.as_json:
         print(json.dumps(report.to_document(), indent=2, sort_keys=True), file=out)
@@ -118,6 +138,41 @@ def command_doctor(args: argparse.Namespace, out: TextIO) -> int:
     return INTEGRITY_FAILURE if report.has_errors else OK
 
 
+def require_workspace(path: Path) -> Layout:
+    """Resolve an initialized workspace, or refuse with the standard diagnostic."""
+    if not is_initialized(path):
+        raise NotInitializedError(
+            f"{path} is not an initialized SkillKernel workspace "
+            f"(no {CONFIG_FILENAME}); run 'skillkernel init {path}' first"
+        )
+    return Layout(root=path.resolve())
+
+
+def render_install(result: InstallResult, out: TextIO) -> None:
+    record = result.record
+    print(
+        f"installed {record.id} from bundle {result.bundle_id}@{result.bundle_version}",
+        file=out,
+    )
+    print(f"  location   {result.relative_path}", file=out)
+    print(f"  maturity   {record.maturity}", file=out)
+    print(f"  source     {result.content_hash}", file=out)
+    print(
+        f"  evaluation {result.positive_cases} positive, {result.negative_cases} negative case(s)",
+        file=out,
+    )
+    print(
+        "  the definition is installed; its maturity and evidence are earned here",
+        file=out,
+    )
+
+
+def command_skill_install(args: argparse.Namespace, out: TextIO) -> int:
+    layout = require_workspace(Path(args.path))
+    render_install(install_bundle_by_id(layout, str(args.bundle)), out)
+    return OK
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -126,8 +181,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_help(sys.stderr)
         return USAGE_ERROR
 
-    handlers = {"init": command_init, "doctor": command_doctor}
-    handler = handlers[str(args.command)]
+    handlers: dict[str, Callable[[argparse.Namespace, TextIO], int]] = {
+        "init": command_init,
+        "doctor": command_doctor,
+        "skill install": command_skill_install,
+    }
+    key = str(args.command)
+    if key == "skill":
+        key = f"{key} {args.skill_command}"
+    handler = handlers[key]
 
     try:
         return handler(args, sys.stdout)
