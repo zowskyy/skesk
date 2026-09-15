@@ -19,15 +19,23 @@ learns a project's engineering methods; it does not contain any project's
 methods itself. The same kernel should serve an animation studio, a website and
 an unrelated future repository while each develops a different skill library.
 
-## Status: Milestone 0 — foundation verified (frozen)
+## Status: Vertical Slice 1 — the lifecycle runs end to end
 
-Frozen at tag **`skillkernel-m0-verified`**. See
-`docs/project/FREEZE-milestone-0.md` for the commit hash, measured results,
-tool versions and restart procedure. Resume work by branching from that tag,
-not by committing onto it.
+The complete research-to-skill workflow now executes through the domain layer
+and is proven by an acceptance test that starts from an empty directory:
 
-The domain layer is implemented, tested and type-checked. **No end-to-end
-vertical slice runs yet**, and there is no command-line interface.
+```
+initialize → knowledge → experiment (define, freeze, measure) → evidence
+→ skill candidate → candidate → experimental → evaluate → validated
+→ reload from disk → verify provenance
+```
+
+There is still **no command-line interface**; the CLI is a later thin adapter
+over operations this slice has proven.
+
+Milestone 0's foundation is frozen at tag **`skillkernel-m0-verified`** — see
+`docs/project/FREEZE-milestone-0.md` for its commit, measured results and
+restart procedure.
 
 | Subsystem | State |
 | --- | --- |
@@ -39,13 +47,19 @@ vertical slice runs yet**, and there is no command-line interface.
 | Evidence ledger (hash-chained) | Implemented, tested |
 | Observation records | Implemented, tested |
 | Skill contract and maturity state machine | Implemented, tested |
-| Promotion gates, evaluation, discovery, compiler, CLI | **Not implemented** |
+| Workspace initialization | Implemented, tested |
+| Skill storage and append-only promotion history | Implemented, tested |
+| Activation-boundary evaluation | Implemented, tested |
+| Promotion gates and engine | Implemented, tested |
+| Provenance verification | Implemented, tested |
+| Discovery, compiler, `doctor`, CLI | **Not implemented** |
 
 `ARCHITECTURE.md` is authoritative on this. Nothing above is inferred from the
 presence of a file or directory.
 
-Measured on the baseline commit: 421 tests passing, ruff clean, mypy clean.
-See `docs/project/baseline-0001.md`.
+Measured: 483 tests passing, ruff clean, mypy clean, reproducible from a clean
+checkout. See `docs/project/baseline-0001.md` for the frozen Milestone 0
+baseline.
 
 ## Development setup
 
@@ -93,10 +107,13 @@ Tests are offline and deterministic. Timestamps are pinned through
 
 ```
 skillkernel/        the kernel (core, registry, knowledge, experiments,
-                    evidence, discovery, skills, project, utils)
-tests/              unit tests; integration and acceptance to follow
+                    evidence, evaluation, promotion, validation, discovery,
+                    skills, project, utils)
+tests/unit/         unit tests, weighted toward adversarial paths
+tests/acceptance/   the end-to-end lifecycle proof
 docs/decisions/     design decisions and their rationale
-docs/project/       project profile and baseline records
+docs/policies/      reusable universal agent rules
+docs/project/       project profile, baseline and freeze records
 AGENTS.md           operating instructions for agents
 ARCHITECTURE.md     what is implemented, and what is only planned
 ```

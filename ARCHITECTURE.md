@@ -4,7 +4,9 @@ This document describes **what exists**. Planned work is confined to the final
 section and is explicitly marked. Nothing here is inferred from the presence of
 a file or a directory.
 
-Authoritative as of the Milestone 0 baseline (`docs/project/baseline-0001.md`).
+Authoritative as of Vertical Slice 1. The Milestone 0 baseline is frozen at
+`skillkernel-m0-verified` (`docs/project/baseline-0001.md`); this document
+describes the tree as it stands after Slice 1.
 
 ---
 
@@ -213,13 +215,88 @@ have relied on.
 
 ---
 
+### 2.12 Workspace initialization — `skillkernel/project/bootstrap.py`
+
+`initialize(root, project_name=...)` creates the managed tree, kernel
+configuration, an empty project profile and every registry, and returns a
+`Layout`. It refuses to overwrite an existing workspace and leaves unrelated
+files alone.
+
+The profile is created empty. A default that guessed at domains or objectives
+would be a fabricated requirement.
+
+Deliberately narrow: full `skillkernel init` semantics — reporting what was
+created versus left alone, repairing a partial workspace, and the `doctor`
+sweep — remain Slice 3. This exists because the lifecycle needed a real
+workspace.
+
+### 2.13 Skill storage — `skillkernel/skills/store.py`, `history.py`
+
+Skills are directories, not files: `skill.yaml` plus promotion history,
+evaluation definition and example cases. `SkillStore` writes the tree and
+registers its `skill.yaml`.
+
+`SkillStore` **cannot change a skill's maturity.** `update()` accepts only
+behavioural fields and confidence; lifecycle and provenance fields are rejected
+by name. Maturity moves exclusively through the promotion engine, because a
+maturity change without a gate check and a history entry is the silent state
+mutation the design forbids.
+
+`history.yaml` is append-only. Its chain must be contiguous, start at
+`observed`, and **end at the skill's current maturity** — so editing a maturity
+into `skill.yaml` by hand is detectable rather than invisible.
+
+### 2.14 Evaluation — `skillkernel/evaluation/`
+
+Deterministic, model-free scoring of a skill's activation boundaries.
+
+A suite lives in the skill's own directory: `scorer/eval.yaml` (corpus, pass
+threshold, false-activation guardrail) and `examples/positive|negative/*.yaml`.
+**Both polarities are required** — a suite without negative cases can measure
+whether a skill fires but never whether it fires when it should not.
+
+Four outcome classes are reported separately and never collapsed (DEC-0003):
+true positives, true negatives, **false activations**, missed activations. The
+false-activation rate is a guardrail independent of accuracy, so a skill that
+is 90% accurate while firing on a negative case still fails.
+
+The runner writes a deterministic JSON report, records it in the evidence
+ledger, and stamps it with the skill's **behaviour fingerprint** at evaluation
+time. That stamp is what lets the `validated` gate ask whether an evaluation is
+still about this skill.
+
+### 2.15 Promotion — `skillkernel/promotion/`
+
+Three checks in a fixed order: shape (the state machine), earned (the gate),
+then record (history, then the skill). The gate runs before any write, so a
+refused promotion leaves the skill untouched — there is no partial application
+to unwind.
+
+Gate requirements are in `docs/decisions/DEC-0009-slice1-gate-scope.md`. The
+`validated` gate requires a passing evaluation whose fingerprint matches the
+skill as it currently stands; a stale evaluation is refused with a diagnostic
+saying so and naming the remedy.
+
+### 2.16 Provenance — `skillkernel/validation/provenance.py`
+
+Walks skill → evidence → experiment → knowledge → artifact, and checks the
+reverse direction: every cited evidence record must resolve back to its own
+experiment, knowledge and artifact. Detects dangling references, refuted or
+superseded knowledge, unfrozen or post-freeze-edited experiments, tampered
+artifacts and broken history chains.
+
+---
+
 ## 3. Verification
 
-421 tests, weighted by risk rather than by count. Negative and adversarial cases
+483 tests, weighted by risk rather than by count. Negative and adversarial cases
 are the majority.
 
 | Area | Tests |
 | --- | --- |
+| Promotion gates (red-team) | 22 |
+| Slice 1 components | 36 |
+| Lifecycle acceptance (end to end) | 4 |
 | Schema engine | 68 |
 | Skill contract and fingerprint | 66 |
 | Maturity state machine | 51 |
@@ -259,16 +336,6 @@ Everything below is design intent. None of it exists in the tree; the
 corresponding directories were removed rather than left empty, because an empty
 directory asserts a capability that is not there.
 
-- **Promotion gates** — maturity-dependent required fields and artifacts
-  (`candidate` requires purpose, applicability and provenance; `experimental`
-  adds procedure and evidence; `validated` adds a passing evaluation, failure
-  modes and verification; `trusted` requires repeated evidence across distinct
-  corpora). Append-only promotion history with a contiguous, verifiable chain.
-- **Evaluation** — deterministic scoring of activation boundaries against
-  labelled positive and negative example fixtures. It must report activation
-  true positives, true negatives, false activations and missed activations
-  *separately* from execution success; a single aggregate score could hide unsafe
-  over-activation. See `docs/decisions/DEC-0003-activation-scoring.md`.
 - **Discovery** — deterministic candidate generation from repeated observations
   above configured thresholds. Generation is strictly separate from promotion.
 - **Skill compiler** — a self-contained consumable package whose provenance
@@ -278,13 +345,15 @@ directory asserts a capability that is not there.
   truth and `SKILL.md` a generated projection, so no fact has two mutable homes.
   Staleness, absence and manual modification must all be detectable.
   See `docs/decisions/DEC-0005-generated-skill-docs.md`.
-- **`skillkernel init`** — idempotent bootstrap that refuses destructive
-  overwrites.
+- **`skillkernel init`** — the full idempotent bootstrap. `initialize()` exists
+  (§2.12); what remains is idempotent re-run semantics, reporting created versus
+  preserved paths, and repairing a partial workspace.
 - **`skillkernel doctor`** — repository-wide integrity check reporting
   ERROR/WARNING/INFO with a non-zero exit on invalid state. Several of its
   checks already exist as library functions (`EvidenceLedger.verify`,
   `ExperimentStore.verify`, `KnowledgeStore.lineage_issues`,
-  `Registry.orphan_record_files`); `doctor` will aggregate them.
+  `Registry.orphan_record_files`, `verify_provenance`); `doctor` will aggregate
+  them.
 - **CLI** — thin wrappers over the domain APIs. No business logic in command
   handlers. Commands will be added only once the operation beneath them exists.
 - **Bundled core skills** — a small, high-confidence universal set. They will
