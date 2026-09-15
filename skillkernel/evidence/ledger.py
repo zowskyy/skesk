@@ -1,8 +1,23 @@
 """The evidence ledger.
 
-Append-oriented: records are written once and never edited in place. Each record
-carries the identifier and hash of the record before it, so ``verify()`` can
-prove that no historical record has been altered or removed.
+Append-oriented and *tamper-evident*. Records are written once and never edited
+in place by the kernel, and each carries the identifier and hash of the record
+before it, so ``verify()`` detects a record that has been altered, removed,
+inserted or reordered after the fact.
+
+The precise guarantee, stated carefully because later promotion decisions rest
+on it:
+
+    Unauthorized modification of ledger history becomes *detectable* by
+    ``verify()`` under the current trust model.
+
+That is tamper evidence, not immutability. Anyone who can write to the
+repository can rewrite a record — and, if they also recompute every subsequent
+chain hash, produce a ledger that verifies. The chain raises the cost of a
+silent edit from "change one line" to "rewrite the entire remaining history",
+and makes the ordinary accident (hand-editing a record, deleting an artifact,
+restoring a stale file) loud. Genuine immutability would require an authority
+outside the repository, such as signed commits or an append-only remote.
 
 Artifacts are copied into ``evidence/artifacts/<EV-id>/`` and hashed. Recording
 an artifact that was not copied (an external report, say) is allowed, but the
@@ -29,8 +44,8 @@ from skillkernel.utils.hashing import canonical_json, sha256_bytes, sha256_file
 __all__ = ["EvidenceLedger", "LedgerFinding"]
 
 _HEADER = (
-    "# SkillKernel evidence record. Append-only: this file is chained to its predecessor,\n"
-    "# so editing it invalidates every later record. Verify with 'skillkernel evidence verify'.\n"
+    "# SkillKernel evidence record. Chained to its predecessor: editing this file makes the\n"
+    "# ledger fail verification from here onwards. This is tamper evidence, not immutability.\n"
 )
 
 

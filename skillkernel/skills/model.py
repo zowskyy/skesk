@@ -39,7 +39,9 @@ from skillkernel.skills.maturity import MATURITIES
 from skillkernel.utils.hashing import sha256_mapping
 
 __all__ = [
+    "BEHAVIORAL_ROLE",
     "CONFIDENCE_LEVELS",
+    "FIELD_ROLES",
     "SKILL_SCHEMA",
     "SKILL_SCOPES",
     "SkillRecord",
@@ -137,27 +139,63 @@ SKILL_SCHEMA = Schema(
     ),
 )
 
-_BEHAVIOR_FIELDS = (
-    "name",
-    "slug",
-    "purpose",
-    "applies_when",
-    "do_not_apply_when",
-    "activation_rules",
-    "inputs",
-    "preconditions",
-    "procedure",
-    "success_conditions",
-    "failure_modes",
-    "verification",
+FIELD_ROLES: dict[str, str] = {
+    # identity: names the record; changing it makes it a different record.
+    "schema_version": "identity",
+    "id": "identity",
+    "slug": "identity",
+    # presentation: how the skill is shown to a human. Renaming a skill does not
+    # change what a consumer following it would do.
+    "name": "presentation",
+    # behavioral: what the skill tells a consumer to do, and when it applies.
+    # These, and only these, feed the behavior fingerprint.
+    "purpose": "behavioral",
+    "applies_when": "behavioral",
+    "do_not_apply_when": "behavioral",
+    "activation_rules": "behavioral",
+    "inputs": "behavioral",
+    "preconditions": "behavioral",
+    "procedure": "behavioral",
+    "success_conditions": "behavioral",
+    "failure_modes": "behavioral",
+    "verification": "behavioral",
+    # lifecycle: where the skill sits in its own maturation. Mutated *by* the
+    # kernel as evidence accumulates, so it must not invalidate that evidence.
+    "version": "lifecycle",
+    "classification": "lifecycle",
+    "project_scope": "lifecycle",
+    "confidence": "lifecycle",
+    "deprecation": "lifecycle",
+    "updated_at": "lifecycle",
+    # provenance: what the skill rests on. Append-oriented bookkeeping.
+    "evidence": "provenance",
+    "provenance": "provenance",
+}
+"""Every top-level skill field, classified by the role it plays.
+
+The classification is the *reason* the behavior fingerprint covers what it
+covers, rather than a hand-maintained list of field names. A test asserts that
+every field in :data:`SKILL_SCHEMA` appears here, so adding a field to the
+schema without deciding its role is a test failure, not a silent omission.
+"""
+
+BEHAVIORAL_ROLE = "behavioral"
+
+_BEHAVIOR_FIELDS: tuple[str, ...] = tuple(
+    sorted(field for field, role in FIELD_ROLES.items() if role == BEHAVIORAL_ROLE)
 )
 
 
 def behavior_fingerprint(document: dict[str, Any]) -> str:
     """Hash the parts of a skill that determine what it does and when.
 
-    Deliberately excludes maturity, scope, evidence, provenance, project scope,
-    confidence, version and timestamps.
+    Covers exactly the fields classified ``behavioral`` in :data:`FIELD_ROLES`.
+
+    The exclusions are not incidental. An evaluation is evidence about *this
+    procedure with these activation boundaries*; promoting the skill, attaching
+    the evidence, or renaming it cannot change whether that evaluation still
+    describes the skill. If lifecycle fields were covered, recording a
+    promotion would invalidate the evaluation that justified it.
     """
     payload = {key: document.get(key) for key in _BEHAVIOR_FIELDS}
     return sha256_mapping(payload)

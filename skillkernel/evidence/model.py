@@ -9,7 +9,9 @@ and, read the other way, an artifact can be traced back to the conclusions that
 rest on it.
 
 Records are chained: each carries the identifier and hash of its predecessor, so
-editing or removing an historical record invalidates every record after it.
+editing or removing an historical record makes every record after it fail
+verification. See :mod:`skillkernel.evidence.ledger` for the exact guarantee --
+it is tamper evidence, not immutability.
 """
 
 from __future__ import annotations

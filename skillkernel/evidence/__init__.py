@@ -1,4 +1,4 @@
-"""The evidence ledger: hash-chained, append-oriented, traceable."""
+"""The evidence ledger: hash-chained, append-oriented, tamper-evident, traceable."""
 
 from skillkernel.evidence.ledger import EvidenceLedger
 from skillkernel.evidence.model import EVIDENCE_SCHEMA, EvidenceRecord
