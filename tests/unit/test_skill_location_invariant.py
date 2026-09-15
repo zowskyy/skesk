@@ -230,7 +230,13 @@ def test_non_canonical_paths_are_rejected_by_the_parser(layout: Layout, relative
 
 
 def test_an_empty_slug_is_refused(layout: Layout) -> None:
-    with pytest.raises(ValueError, match="slug must not be empty"):
+    """Now refused by the canonical slug grammar (DEC-0013).
+
+    Previously a bare ValueError; an empty slug is simply one case of a
+    non-canonical component, so it raises the same SkillKernelError as every
+    other malformed slug.
+    """
+    with pytest.raises(ValidationError, match="not a canonical skill slug"):
         layout.skill_path("project", "")
 
 

@@ -22,3 +22,4 @@ files become the human projection of those records.
 | [DEC-0010](DEC-0010-cli-exit-codes.md) | Accepted | CLI exit-code doctrine; exit 70 for unexpected internal failure |
 | [DEC-0011](DEC-0011-skill-location-identity.md) | Accepted | A skill's location-bearing identity (`scope`, `slug`) is immutable through ordinary persistence |
 | [DEC-0012](DEC-0012-workspace-independent-doctor-output.md) | Accepted | Machine-readable doctor output is workspace-independent |
+| [DEC-0013](DEC-0013-canonical-path-components.md) | Accepted | Canonical path components are strictly validated |

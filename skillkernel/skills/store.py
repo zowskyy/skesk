@@ -146,6 +146,10 @@ class SkillStore:
         if scope not in SKILL_SCOPES:
             raise ValidationError(f"unknown skill scope {scope!r}; expected one of {SKILL_SCOPES}")
         resolved_slug = slug or slugify(name)
+        # Validate the canonical components before anything is written.
+        # allocate_id() below persists the registry counter, so checking later
+        # would burn an identifier for a slug that was never going to be legal.
+        self.layout.relative_skill_path(scope, resolved_slug)
         if self.find_by_slug(scope, resolved_slug) is not None:
             raise ValidationError(
                 f"a {scope} skill with slug {resolved_slug!r} already exists; "

@@ -338,6 +338,24 @@ def _check_skill_locations(report: DoctorReport, layout: Layout) -> None:
                 "history have almost certainly been overwritten.",
             )
 
+    # A registered path that is not structurally canonical is corruption the
+    # index alone proves. It is checked before any record is read, because such
+    # a path usually makes its own record unreadable -- and a load-first
+    # ordering would skip exactly the entries that are worst. Nothing outside
+    # the managed tree is scanned, and nothing is repaired.
+    for skill_id in sorted(index.entries):
+        entry = index.entries[skill_id]
+        if layout.parse_relative_skill_path(entry.path) is None:
+            report.add(
+                ERROR,
+                "skill-location",
+                skill_id,
+                f"is registered at {entry.path}, which is not a canonical skill "
+                "location. A canonical location is <scope>/<slug>/skill.yaml with a "
+                "well-formed slug; this entry could place the record outside the "
+                "skills tree.",
+            )
+
     # Per-skill checks are isolated: an unreadable record is already reported by
     # the registry check, and must not abort the remaining skills.
     for skill_id in sorted(index.entries):
