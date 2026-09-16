@@ -57,6 +57,11 @@ class ExperimentStore:
             # A definition is <EXP-ID>/v<N>.yaml, a directory deep. The flat glob
             # this replaces could only see a shape the store never writes.
             record_finder=layout.experiment_definition_states,
+            # A new experiment claims the whole <EXP-ID>/ directory. Versions of
+            # an experiment that is already registered land inside a directory it
+            # owns, and never allocate, so this cannot catch a revision.
+            claim_path=lambda record_id: f"definitions/{record_id}",
+            claim_kind="directory",
         )
 
     # --- locations ---------------------------------------------------------

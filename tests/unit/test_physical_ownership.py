@@ -301,3 +301,241 @@ def test_the_refusal_is_an_ordinary_domain_error(layout: Layout, skills: SkillSt
     plant(layout)
     with pytest.raises(SkillKernelError):
         create(skills)
+
+
+# --- the same invariant at the allocation boundary --------------------------
+#
+# VS5 closed this for skills, whose destination is derived from a caller-chosen
+# slug. Four other stores derive it from the identifier ``allocate_id`` is about
+# to issue, and none of them looked before writing.
+#
+# An interruption cannot produce the collision: ``allocate_id`` persists
+# ``next_sequence`` first, so an interrupted create orphans a record at an
+# identifier that is never reissued. It is reached by the index moving *backwards*
+# relative to the records tree -- ``git checkout <older> -- <domain>/registry/
+# index.yaml``, a partial revert, a restored backup, or a records tree copied from
+# another workspace. Both files are tracked, and this project keeps the repository
+# as its system of record, so a partial checkout is an ordinary operation rather
+# than a contrived one. ``rewind`` below restores an earlier index byte for byte,
+# which is exactly what that checkout does.
+
+from skillkernel.discovery.observations import ObservationStore  # noqa: E402
+from skillkernel.evidence.ledger import EvidenceLedger  # noqa: E402
+from skillkernel.experiments.store import ExperimentStore  # noqa: E402
+from skillkernel.knowledge.store import KnowledgeStore  # noqa: E402
+
+
+def rewind(registry: Registry, saved: bytes) -> None:
+    """Restore an earlier index, as ``git checkout <older> -- <index>`` does."""
+    registry.index_file.write_bytes(saved)
+
+
+def add_knowledge(store: KnowledgeStore, statement: str) -> Any:
+    return store.add(statement=statement, scope="project", source_type="research")
+
+
+def add_experiment(layout: Layout, title: str) -> Any:
+    return ExperimentStore(layout).add(
+        title=title,
+        hypothesis="h",
+        independent_variable="v",
+        control={"label": "c", "description": "c"},
+        treatment={"label": "t", "description": "t"},
+        corpus={"id": "corpus", "description": "d", "cases": ["c1"]},
+        scorer={"name": "s", "version": "1", "deterministic": True},
+        primary_metric={"name": "m", "direction": "maximize", "description": None},
+        pass_threshold=0.9,
+        failure_threshold=0.5,
+        project="fixture-project",
+    )
+
+
+# --- knowledge --------------------------------------------------------------
+
+
+def test_knowledge_refuses_a_destination_a_rewound_index_would_reclaim(layout: Layout) -> None:
+    store = KnowledgeStore(layout)
+    saved = store.registry.index_file.read_bytes()
+    record = add_knowledge(store, "The original claim, which must survive.")
+    path = store.registry.path_of(record.id)
+    original = path.read_bytes()
+
+    rewind(store.registry, saved)
+    reloaded = KnowledgeStore(layout)
+    assert reloaded.ids() == [], "the rewind must actually orphan the record"
+
+    before = tree(layout.root)
+    sequence = reloaded.registry.load_index().next_sequence
+    with pytest.raises(UnsafeOperationError, match="unmanaged"):
+        add_knowledge(reloaded, "A replacement claim that must never land.")
+
+    assert path.read_bytes() == original, "the orphaned record was overwritten"
+    assert tree(layout.root) == before
+    assert reloaded.registry.load_index().next_sequence == sequence
+    assert KnowledgeStore(layout).ids() == []
+
+
+def test_the_refused_knowledge_create_precedes_every_write(
+    layout: Layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = KnowledgeStore(layout)
+    saved = store.registry.index_file.read_bytes()
+    add_knowledge(store, "The original claim, which must survive.")
+    rewind(store.registry, saved)
+
+    def detonate(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a write ran before the destination was refused")
+
+    monkeypatch.setattr("skillkernel.registry.index.write_yaml_file", detonate)
+    with pytest.raises(UnsafeOperationError, match="unmanaged"):
+        add_knowledge(KnowledgeStore(layout), "A replacement claim.")
+
+
+def test_ordinary_knowledge_creation_is_unchanged(layout: Layout) -> None:
+    store = KnowledgeStore(layout)
+    first = add_knowledge(store, "A testable claim about the world.")
+    second = add_knowledge(store, "A second, unrelated testable claim.")
+    assert [first.id, second.id] == ["K-0001", "K-0002"]
+    assert store.ids() == ["K-0001", "K-0002"]
+
+
+def test_the_orphaned_knowledge_record_is_still_reported(layout: Layout) -> None:
+    """Invariant B's reporting must survive Invariant A's refusal."""
+    store = KnowledgeStore(layout)
+    saved = store.registry.index_file.read_bytes()
+    record = add_knowledge(store, "A claim that becomes an orphan.")
+    rewind(store.registry, saved)
+
+    report = run_doctor(layout)
+    assert report.is_complete
+    assert not report.has_errors
+    assert [(f.severity, f.location) for f in report.warnings] == [
+        ("WARNING", f"knowledge/records/{record.id}.yaml")
+    ]
+
+
+# --- evidence and observations, the same shape ------------------------------
+
+
+def test_evidence_refuses_a_reclaimed_destination(layout: Layout) -> None:
+    ledger = EvidenceLedger(layout)
+    saved = ledger.registry.index_file.read_bytes()
+    record = ledger.record(
+        kind="observation_note",
+        summary="The original measurement.",
+        project="fixture-project",
+        source_type="tool",
+        source_detail="pytest",
+    )
+    path = ledger.registry.path_of(record.id)
+    original = path.read_bytes()
+    rewind(ledger.registry, saved)
+
+    before = tree(layout.root)
+    with pytest.raises(UnsafeOperationError, match="unmanaged"):
+        EvidenceLedger(layout).record(
+            kind="observation_note",
+            summary="A replacement that must never land.",
+            project="fixture-project",
+            source_type="tool",
+            source_detail="pytest",
+        )
+    assert path.read_bytes() == original
+    assert tree(layout.root) == before
+
+
+def test_observations_refuse_a_reclaimed_destination(layout: Layout) -> None:
+    store = ObservationStore(layout)
+    saved = store.registry.index_file.read_bytes()
+    record = store.add(
+        category="pattern",
+        task="The original task.",
+        context="ctx",
+        classification="success",
+        outcome="resolved",
+        project="fixture-project",
+    )
+    path = store.registry.path_of(record.id)
+    original = path.read_bytes()
+    rewind(store.registry, saved)
+
+    with pytest.raises(UnsafeOperationError, match="unmanaged"):
+        ObservationStore(layout).add(
+            category="pattern",
+            task="A replacement that must never land.",
+            context="ctx",
+            classification="success",
+            outcome="resolved",
+            project="fixture-project",
+        )
+    assert path.read_bytes() == original
+
+
+# --- experiments: a new identity, versus a version of an owned one ----------
+
+
+def test_a_new_experiment_refuses_an_unowned_destination(layout: Layout) -> None:
+    store = ExperimentStore(layout)
+    saved = store.registry.index_file.read_bytes()
+    definition = add_experiment(layout, "ORIGINAL EXPERIMENT")
+    path = store.definition_path(definition.id, 1)
+    original = path.read_bytes()
+    rewind(store.registry, saved)
+    assert ExperimentStore(layout).ids() == []
+
+    before = tree(layout.root)
+    sequence = ExperimentStore(layout).registry.load_index().next_sequence
+    with pytest.raises(UnsafeOperationError, match="unmanaged"):
+        add_experiment(layout, "REPLACEMENT EXPERIMENT")
+
+    assert path.read_bytes() == original, "the orphaned definition was overwritten"
+    assert tree(layout.root) == before
+    assert ExperimentStore(layout).registry.load_index().next_sequence == sequence
+
+
+def test_revising_an_owned_experiment_still_works(layout: Layout) -> None:
+    """Case 2, which must not be caught by case 1's refusal.
+
+    ``revise`` reuses the existing identifier and never allocates, so the new
+    guard cannot see it -- but the whole point is that a legitimate second
+    version lands inside a directory that already exists.
+    """
+    store = ExperimentStore(layout)
+    definition = add_experiment(layout, "An experiment worth revising")
+    store.freeze(definition.id)
+    revised = store.revise(definition.id, changes={"pass_threshold": 0.95}, reason="raise the bar")
+
+    assert revised.version == 2
+    assert store.versions(definition.id) == [1, 2]
+    assert store.definition_path(definition.id, 1).is_file()
+    assert store.get(definition.id).version == 2
+
+
+def test_freezing_an_owned_experiment_still_works(layout: Layout) -> None:
+    store = ExperimentStore(layout)
+    definition = add_experiment(layout, "An experiment worth freezing")
+    frozen = store.freeze(definition.id)
+    assert frozen.frozen
+    assert store.versions(definition.id) == [1]
+
+
+def test_a_retained_first_version_is_not_an_ownership_collision(layout: Layout) -> None:
+    """The regression the contract names explicitly."""
+    store = ExperimentStore(layout)
+    definition = add_experiment(layout, "An experiment with history")
+    store.freeze(definition.id)
+    store.revise(definition.id, changes={"pass_threshold": 0.95}, reason="first revision")
+    store.freeze(definition.id)
+    store.revise(definition.id, changes={"failure_threshold": 0.4}, reason="second revision")
+
+    assert store.versions(definition.id) == [1, 2, 3]
+    report = run_doctor(layout)
+    assert report.is_complete
+    assert not report.has_errors
+    assert report.warnings == []
+
+
+def test_a_second_new_experiment_is_unaffected_by_the_first(layout: Layout) -> None:
+    first = add_experiment(layout, "First")
+    second = add_experiment(layout, "Second")
+    assert [first.id, second.id] == ["EXP-0001", "EXP-0002"]

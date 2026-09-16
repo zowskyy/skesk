@@ -31,6 +31,7 @@ from skillkernel.core.errors import (
     DuplicateIdError,
     IntegrityError,
     RecordNotFoundError,
+    UnsafeOperationError,
     ValidationError,
 )
 from skillkernel.core.ids import format_id, parse_id
@@ -45,7 +46,13 @@ from skillkernel.core.schema import (
 )
 from skillkernel.core.yamlio import load_yaml_file, write_yaml_file
 
-__all__ = ["INDEX_SCHEMA", "Registry", "RegistryEntry", "RegistryIndex"]
+__all__ = [
+    "INDEX_SCHEMA",
+    "Registry",
+    "RegistryEntry",
+    "RegistryIndex",
+    "identifier_does_not_determine_destination",
+]
 
 INDEX_SCHEMA_VERSION = 1
 
@@ -78,6 +85,19 @@ _INDEX_HEADER = (
     "# Entries are sorted by identifier; 'summary' is denormalized for listings only —\n"
     "# the record file named by 'path' is authoritative.\n"
 )
+
+
+def identifier_does_not_determine_destination(_record_id: str) -> None:
+    """Claim strategy for a domain located by something other than its identifier.
+
+    A skill lives at ``<scope>/<slug>/``, derived from two declared fields rather
+    than from the number it is allocated, so there is nothing for allocation to
+    check. ``SkillStore`` guards that destination earlier, where the scope and
+    slug are known. Stated explicitly rather than left to the default, which
+    would silently check ``skills/records/<ID>.yaml`` -- a path that never
+    exists, and so a guard that always passes while appearing to do work.
+    """
+    return
 
 
 @dataclass(frozen=True)
@@ -122,12 +142,22 @@ class Registry:
         id_prefix: str,
         records_subdir: str = "records",
         record_finder: Callable[[], Iterable[Path]] | None = None,
+        claim_path: Callable[[str], str | None] | None = None,
+        claim_kind: str = "file",
     ) -> None:
         self.layout = layout
         self.kind = kind
         self.domain_dir = domain_dir
         self.id_prefix = id_prefix
         self.records_subdir = records_subdir
+        self.claim_path = claim_path
+        """The canonical path a newly allocated identifier will claim.
+
+        ``None`` means :meth:`default_record_path`, which is what the flat
+        domains write. Experiments claim a directory; skills pass
+        :func:`identifier_does_not_determine_destination`."""
+        self.claim_kind = claim_kind
+        """Whether a claim is a ``file`` or a ``directory``, for the diagnostic."""
         self.record_finder = record_finder
         """How this domain's persisted state is found on disk.
 
@@ -214,10 +244,55 @@ class Registry:
         write_yaml_file(self.index_file, document, header=_INDEX_HEADER)
 
     # --- identifiers -------------------------------------------------------
+    def _claimed_destination(self, record_id: str) -> str | None:
+        """The domain-relative path a newly allocated ``record_id`` will claim."""
+        if self.claim_path is None:
+            return self.default_record_path(record_id)
+        return self.claim_path(record_id)
+
+    def require_unowned_destination(self, record_id: str) -> None:
+        """Refuse the destination ``record_id`` would claim if something is there.
+
+        The no-adoption rule of DEC-0018, at the boundary where it applies to
+        every domain whose location is derived from its identifier. The skills
+        store proves the same thing about a slug-derived destination before it
+        gets here; this covers the four stores that could not, because their
+        destination does not exist as a question until an identifier is chosen.
+
+        ``exists()`` follows symlinks, so a broken one is asked about separately:
+        it reads as absent and would otherwise be refused later, after the index
+        had already been written.
+        """
+        relative = self._claimed_destination(record_id)
+        if relative is None:
+            return
+        destination = self.resolve(relative)
+        if destination.exists() or destination.is_symlink():
+            raise UnsafeOperationError(
+                f"{self.domain_dir.name}/{relative} already exists on disk but no "
+                f"{self.kind} record is registered there. Allocating {record_id} would "
+                f"claim an unmanaged {self.claim_kind} and overwrite whatever it holds. "
+                "Inspect it and remove it deliberately; nothing has been written."
+            )
+
     def allocate_id(self) -> str:
-        """Reserve and persist the next identifier for this domain."""
+        """Reserve and persist the next identifier for this domain.
+
+        The destination is proved unowned **first**. The identifier is derived
+        from ``next_sequence`` before the index is written, so the refusal
+        precedes the only mutation here -- which is what makes "before the first
+        mutation and before identifier allocation" true rather than aspirational.
+
+        An interruption cannot produce the state this refuses: the counter is
+        persisted before the record, so an interrupted create orphans a file at
+        an identifier that is never reissued. It is reached by the index moving
+        backwards relative to the records tree -- a partial checkout, revert or
+        restore -- which is an ordinary operation on a repository that is its own
+        system of record.
+        """
         index = self.load_index()
         record_id = format_id(self.id_prefix, index.next_sequence)
+        self.require_unowned_destination(record_id)
         index.next_sequence += 1
         self._write_index(index)
         return record_id

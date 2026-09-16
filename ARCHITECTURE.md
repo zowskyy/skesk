@@ -98,10 +98,13 @@ Detected corruption: orphan records, dangling entries, duplicate identifiers,
 foreign prefixes, a counter that would reuse an identifier, an index declaring
 the wrong kind, and index paths that escape the repository root.
 
-**Known limitation, reported not fixed.** In the record domains an ordinary
-`add()` still overwrites a pre-existing file at the identifier it allocates.
-Reachability is low — the collision needs a replayed identifier rather than a
-caller-chosen name — and `doctor` now reports such a file. See DEC-0018.
+`allocate_id` proves the destination a new identifier will claim is unoccupied
+before it writes the counter (DEC-0018). Only `add`-style creation allocates, so
+`freeze`, `revise` and `record_result` — which reuse an identifier their index
+already owns — are structurally unable to trip it. The claim is
+`records/<ID>.yaml` by default and `definitions/<ID>/` for experiments; skills
+declare that their location comes from scope and slug instead, and are guarded
+earlier.
 
 ### 2.5 Project profile — `skillkernel/project/profile.py`
 
@@ -464,7 +467,7 @@ See DEC-0014 (what is portable), DEC-0015 (installation semantics) and DEC-0016
 
 ## 3. Verification
 
-940 tests, weighted by risk rather than by count. Negative and adversarial cases
+951 tests, weighted by risk rather than by count. Negative and adversarial cases
 are the majority.
 
 | Area | Tests |

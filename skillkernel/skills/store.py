@@ -30,7 +30,7 @@ from skillkernel.core.errors import (
 )
 from skillkernel.core.ids import SKILL
 from skillkernel.core.paths import HISTORY_FILENAME, SKILL_FILENAME, Layout
-from skillkernel.registry import Registry
+from skillkernel.registry import Registry, identifier_does_not_determine_destination
 from skillkernel.skills.history import (
     append_transition,
     load_history,
@@ -79,6 +79,11 @@ def skills_registry(layout: Layout) -> Registry:
         # collection. Without this the registry looked in skills/records/, which
         # is never created, and so could never report an orphaned skill.
         record_finder=layout.skill_states,
+        # A skill is located by its scope and slug, not by its number, so there
+        # is nothing for allocation to check. SkillStore guards that destination
+        # earlier, where both are known.
+        claim_path=identifier_does_not_determine_destination,
+        claim_kind="directory",
     )
 
 

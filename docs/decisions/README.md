@@ -27,4 +27,4 @@ files become the human projection of those records.
 | [DEC-0015](DEC-0015-bundle-installation-semantics.md) | Accepted (amends DEC-0004, DEC-0008; amended by DEC-0018) | Bundle installation semantics: local identity, `observed` on arrival, refusal over reconciliation |
 | [DEC-0016](DEC-0016-packaged-resource-integrity.md) | Accepted | Packaged resources via `importlib.resources`; the portable content hash |
 | [DEC-0017](DEC-0017-destination-containment.md) | Accepted (extends DEC-0013) | A destination is contained by the root that owns it; components validated before construction |
-| [DEC-0018](DEC-0018-physical-ownership.md) | Accepted (amends DEC-0015) | Physical state does not acquire logical ownership; orphan discovery follows each domain's real topology |
+| [DEC-0018](DEC-0018-physical-ownership.md) | Accepted (amends DEC-0015) | Physical state does not acquire logical ownership, enforced at the allocation boundary; orphan discovery follows each domain's real topology |

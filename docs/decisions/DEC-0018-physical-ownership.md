@@ -1,6 +1,8 @@
 # DEC-0018 — Physical state does not acquire logical ownership by being there
 
 **Status:** Accepted, implemented, tested (Vertical Slice 5).
+**Scope note:** the rule was generalized to the allocation boundary in the VS5
+completion pass; the record domains named below as deferred are now covered.
 **Amends:** DEC-0015 (the safety reading, not the index-read claim).
 **Relates to:** DEC-0011, DEC-0012.
 
@@ -50,9 +52,28 @@ can. Two of five domains were blind; only the skills half was documented.
 ### A — a create refuses a destination it does not already own
 
 Before any mutation and before `allocate_id`, a create proves its canonical
-destination does not physically exist. `SkillStore.require_unowned_destination`
-is that rule, and it is one rule: `SkillStore.create` and the bundle installer's
-`preflight` both call it, rather than keeping a copy each.
+destination does not physically exist.
+
+Two stores derive that destination differently, so the rule has two entry points
+and one meaning. A skill is located by its **scope and slug**, known before any
+identifier is chosen: `SkillStore.require_unowned_destination` proves it there,
+and `SkillStore.create` and the bundle installer's `preflight` both call it
+rather than keeping a copy each. The other four stores locate a record by the
+**identifier `allocate_id` is about to issue**, so the destination does not exist
+as a question until then: `Registry.require_unowned_destination` proves it inside
+`allocate_id`, which computes the identifier from `next_sequence` *before* writing
+the index and so still refuses ahead of the only mutation there.
+
+`Registry.claim_path` says what a new identifier will claim — `records/<ID>.yaml`
+by default, `definitions/<ID>/` for experiments, and nothing for skills, which
+pass `identifier_does_not_determine_destination` rather than let the default
+check `skills/records/<ID>.yaml`: a path that never exists, and so a guard that
+always passes while appearing to do work.
+
+This covers knowledge, evidence, observations and experiments. Only `add`-style
+creation allocates; `freeze`, `revise` and `record_result` reuse an identifier
+their index already owns and never reach the check, which is what keeps a
+legitimate second version landing inside a directory the experiment owns.
 
 Refusal guarantees the workspace is byte-identical, no identifier is burned, and
 no record, history, evaluation or index state is created. The ordering is
@@ -124,19 +145,36 @@ Existing flat-domain behaviour is unchanged, and the legacy flat
 `definitions/<EXP-ID>.yaml` detection is retained rather than traded away for the
 real topology — withdrawing a detection is not a repair.
 
+## How the record domains are reached at all
+
+An interruption cannot produce the collision the record domains suffered:
+`allocate_id` persists `next_sequence` before the record is written, so an
+interrupted create orphans a file at an identifier that is never reissued.
+
+It is reached by the index moving **backwards** relative to the records tree —
+`git checkout <older> -- knowledge/registry/index.yaml`, a partial revert, a
+restored backup, or a records tree copied from another workspace. Both files are
+tracked, and this project keeps the repository as its own system of record, so a
+partial checkout is an ordinary operation rather than a contrived one. That is
+how it was reproduced, with a genuine earlier index restored byte for byte; it
+was not hand-built to make a test fail.
+
+Reachability is still materially lower than the skill case, which collides on a
+caller-chosen slug derived from a name rather than on a replayed counter.
+
 ## Reported, not repaired
 
-The bounded structural search found the same adoption shape in the record
-domains: a planted `knowledge/records/K-0001.yaml` or
-`experiments/definitions/EXP-0001/v1.yaml` is silently overwritten by the next
-`add()`. It is a genuine instance of Invariant A and it is **not** fixed here,
-because `require_unowned_destination` is skill-specific and widening it was not
-authorized. Its reachability is materially lower: the skill case collides on a
-caller-chosen slug derived from a name, while these collide only on a
-monotonically allocated identifier that would have to be replayed. Invariant B
-does make all of them visible to `doctor`.
+**Evidence artifacts.** `EvidenceLedger.record` writes an attachment to
+`evidence/artifacts/<EV-ID>/<name>` before the record itself, and that path is not
+a record destination, so no claim covers it. On the route that made the record
+domains real — an index rewind alone — the record claim refuses first and the
+artifact is untouched; overwriting one additionally requires the record file to
+have been removed, so the state is compound rather than ordinary. An orphaned
+artifact is also invisible to `doctor`, since artifacts are not records. Found in
+the completion pass's red team, outside the authorized boundary, and recorded
+here rather than fixed.
 
-A second contamination route remains reachable only by editing an *index-owned*
-skill's own directory out of band. That is external modification of owned state,
-not adoption of unowned state, and `load_evaluation_suite` is therefore left
-unchanged: the route that mattered was closed at its source.
+**Owned-state contamination.** A route remains reachable only by editing an
+*index-owned* skill's own directory out of band. That is external modification of
+owned state, not adoption of unowned state, and `load_evaluation_suite` is
+therefore left unchanged: the route that mattered was closed at its source.
