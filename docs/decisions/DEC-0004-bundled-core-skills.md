@@ -1,6 +1,9 @@
 # DEC-0004 — Bundled core skills enter at `candidate`
 
-**Status:** Accepted. No core skills are bundled yet.
+**Status:** Accepted; **arrival maturity amended by DEC-0015**.
+Bundled skills now arrive at `observed` and reach `candidate` through the
+ordinary gate rather than being granted it. The reasoning below is unchanged
+and is what DEC-0015 follows through on.
 
 ## Question
 

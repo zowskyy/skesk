@@ -11,18 +11,68 @@ directory an initialized SkillKernel repository.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from skillkernel.core.errors import NotInitializedError, UnsafeOperationError
+from skillkernel.core.errors import (
+    NotInitializedError,
+    UnsafeOperationError,
+    ValidationError,
+)
 
 __all__ = ["CONFIG_FILENAME", "Layout", "find_root", "load_layout"]
 
 CONFIG_FILENAME = "skillkernel.yaml"
 
 SKILL_SCOPES = ("core", "project", "discovered")
-"""Directory-backed skill scopes. ``deprecated`` is a maturity, not a scope."""
+"""Directory-backed skill scopes. ``deprecated`` is a maturity, not a scope.
+
+Defined here rather than beside the skill schema because this is a *layout*
+fact: it names directories. Everything else imports it from here, so a
+location-bearing fact has exactly one definition.
+"""
+
+SKILL_FILENAME = "skill.yaml"
+"""The record file inside every skill directory."""
+
+SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+"""The grammar of a canonical skill slug.
+
+This is not a new restriction. It is exactly what
+:func:`skillkernel.utils.text.slugify` already produces -- lowercase ASCII
+alphanumerics separated by single hyphens, with no leading or trailing hyphen --
+and every slug in this repository already satisfies it.
+
+The point is structural: a string matching this pattern cannot contain a path
+separator, cannot be ``.`` or ``..``, and therefore cannot represent more than
+one path component or escape its scope directory. Rejecting a malformed
+component is stronger than joining arbitrary input and checking containment
+afterwards, because the dangerous path is never constructed at all.
+"""
+
+
+def is_canonical_slug(value: object) -> bool:
+    """True when ``value`` is a well-formed single path component."""
+    return isinstance(value, str) and SLUG_PATTERN.match(value) is not None
+
+
+def validate_slug(value: object) -> str:
+    """Return ``value`` if it is a canonical slug, else raise.
+
+    Called by the canonical path computation, so every caller inherits it and
+    no component-specific validator is needed anywhere else.
+    """
+    if is_canonical_slug(value):
+        assert isinstance(value, str)
+        return value
+    raise ValidationError(
+        f"{value!r} is not a canonical skill slug. A slug must match "
+        f"{SLUG_PATTERN.pattern} -- lowercase a-z0-9 separated by single hyphens, "
+        "with no leading or trailing hyphen. This keeps a slug to exactly one path "
+        "component, so it cannot escape its scope directory."
+    )
 
 
 @dataclass(frozen=True)
@@ -94,6 +144,40 @@ class Layout:
         if scope not in SKILL_SCOPES:
             raise ValueError(f"unknown skill scope {scope!r}; expected one of {SKILL_SCOPES}")
         return self.skills_dir / scope
+
+    # --- canonical skill location ------------------------------------------
+    #
+    # A skill's location is derived from two declared fields, its scope and its
+    # slug. This is the ONLY place that derivation happens: SkillStore and
+    # doctor call these and compare, they never re-derive a path themselves.
+    # Two computations of the same rule would be two sources of truth, which is
+    # the class of defect this exists to prevent.
+
+    def skill_path(self, scope: str, slug: str) -> Path:
+        """The canonical absolute location of a skill's record file."""
+        return self.skill_scope_dir(scope) / validate_slug(slug) / SKILL_FILENAME
+
+    def relative_skill_path(self, scope: str, slug: str) -> str:
+        """The canonical location, relative to the skills directory.
+
+        This is the form the skills registry stores, so it is directly
+        comparable with a registered path.
+        """
+        self.skill_scope_dir(scope)  # validates the scope
+        return f"{scope}/{validate_slug(slug)}/{SKILL_FILENAME}"
+
+    def parse_relative_skill_path(self, relative: str) -> tuple[str, str] | None:
+        """Recover ``(scope, slug)`` from a registered path, or None if it is not canonical.
+
+        Used to describe a mismatch in terms a reader can act on: which identity
+        the stored location actually encodes.
+        """
+        parts = Path(relative).as_posix().split("/")
+        if len(parts) != 3 or parts[2] != SKILL_FILENAME or parts[0] not in SKILL_SCOPES:
+            return None
+        if not is_canonical_slug(parts[1]):
+            return None
+        return parts[0], parts[1]
 
     def registry_file(self, domain_dir: Path) -> Path:
         return domain_dir / "registry" / "index.yaml"

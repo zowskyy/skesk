@@ -4,7 +4,9 @@ This document describes **what exists**. Planned work is confined to the final
 section and is explicitly marked. Nothing here is inferred from the presence of
 a file or a directory.
 
-Authoritative as of the Milestone 0 baseline (`docs/project/baseline-0001.md`).
+Authoritative as of Vertical Slice 1. The Milestone 0 baseline is frozen at
+`skillkernel-m0-verified` (`docs/project/baseline-0001.md`); this document
+describes the tree as it stands after Slice 1.
 
 ---
 
@@ -213,14 +215,223 @@ have relied on.
 
 ---
 
+### 2.12 Workspace initialization — `skillkernel/project/bootstrap.py`
+
+`initialize(root, project_name=...)` creates the managed tree, kernel
+configuration, an empty project profile and every registry, and returns a
+`Layout`. It refuses to overwrite an existing workspace and leaves unrelated
+files alone.
+
+The profile is created empty. A default that guessed at domains or objectives
+would be a fabricated requirement.
+
+Deliberately narrow: full `skillkernel init` semantics — reporting what was
+created versus left alone, repairing a partial workspace, and the `doctor`
+sweep — remain Slice 3. This exists because the lifecycle needed a real
+workspace.
+
+### 2.13 Skill storage — `skillkernel/skills/store.py`, `history.py`
+
+Skills are directories, not files: `skill.yaml` plus promotion history,
+evaluation definition and example cases. `SkillStore` writes the tree and
+registers its `skill.yaml`.
+
+`SkillStore` **cannot change a skill's maturity.** `update()` accepts only
+behavioural fields and confidence; lifecycle and provenance fields are rejected
+by name. Maturity moves exclusively through the promotion engine, because a
+maturity change without a gate check and a history entry is the silent state
+mutation the design forbids.
+
+`history.yaml` is append-only. Its chain must be contiguous, start at
+`observed`, and **end at the skill's current maturity** — so editing a maturity
+into `skill.yaml` by hand is detectable rather than invisible.
+
+**Location-bearing identity is immutable.** A skill's canonical location is
+`skills/<scope>/<slug>/skill.yaml`, computed solely by `Layout`. Persistence
+refuses a record whose declared `classification.scope` or `slug` would move it,
+and the check precedes the first write, so a rejection leaves the workspace
+byte-identical.
+
+This is not tidiness. Before VS3, mutating either field left the record
+registered at its old path, which freed the `(scope, slug)` pair, which let a
+second skill be created in the same directory and silently overwrite the first
+one's record and history — destroying its provenance, detected only by a later
+read. Relocation is a future gated operation; `save()` is not it.
+See `docs/decisions/DEC-0011-skill-location-identity.md`.
+
+### 2.14 Evaluation — `skillkernel/evaluation/`
+
+Deterministic, model-free scoring of a skill's activation boundaries.
+
+A suite lives in the skill's own directory: `scorer/eval.yaml` (corpus, pass
+threshold, false-activation guardrail) and `examples/positive|negative/*.yaml`.
+**Both polarities are required** — a suite without negative cases can measure
+whether a skill fires but never whether it fires when it should not.
+
+Four outcome classes are reported separately and never collapsed (DEC-0003):
+true positives, true negatives, **false activations**, missed activations. The
+false-activation rate is a guardrail independent of accuracy, so a skill that
+is 90% accurate while firing on a negative case still fails.
+
+The runner writes a deterministic JSON report, records it in the evidence
+ledger, and stamps it with the skill's **behaviour fingerprint** at evaluation
+time. That stamp is what lets the `validated` gate ask whether an evaluation is
+still about this skill.
+
+### 2.15 Promotion — `skillkernel/promotion/`
+
+Three checks in a fixed order: shape (the state machine), earned (the gate),
+then record (history, then the skill). The gate runs before any write, so a
+refused promotion leaves the skill untouched — there is no partial application
+to unwind.
+
+Gate requirements are in `docs/decisions/DEC-0009-slice1-gate-scope.md`. The
+`validated` gate requires a passing evaluation whose fingerprint matches the
+skill as it currently stands; a stale evaluation is refused with a diagnostic
+saying so and naming the remedy.
+
+### 2.16 Provenance — `skillkernel/validation/provenance.py`
+
+Walks skill → evidence → experiment → knowledge → artifact, and checks the
+reverse direction: every cited evidence record must resolve back to its own
+experiment, knowledge and artifact. Detects dangling references, refuted or
+superseded knowledge, unfrozen or post-freeze-edited experiments, tampered
+artifacts and broken history chains.
+
+---
+
+### 2.17 Health check — `skillkernel/validation/doctor.py`
+
+An *aggregator*. It owns no validation rules: every check delegates to a
+function that already exists and is tested elsewhere, because a second
+implementation of a rule is a second place for it to drift.
+
+Its exception boundary keeps two similar-looking failures rigorously apart:
+
+| Raised | Meaning | Becomes |
+| --- | --- | --- |
+| `SkillKernelError` | The kernel looked and found a problem. The report is trustworthy. | An `ERROR` finding |
+| any other `Exception` | The kernel failed while looking. An unknown number of checks never ran. | An `internal_error`, separate from findings |
+
+`BaseException` is deliberately not caught, so `KeyboardInterrupt` and
+`SystemExit` keep their normal semantics. A report with zero findings but a
+crashed validator is **not healthy** — it is *unknown*, and `is_complete` says
+so.
+
+`to_document()` carries no timestamps, and workspace-root paths are normalized
+to a `<workspace>` token as findings are added, so the report is byte-stable
+across runs and comparable across machines.
+
+*That last property was claimed in VS2 but not delivered.* An `IntegrityError`
+from `Registry.load` embeds an absolute path, and `doctor` stored the exception
+text verbatim; VS2's test only exercised a healthy workspace, where no such
+message arises. VS3 normalizes at the report boundary and tests the error path
+under two different roots. Lower-level exceptions keep their absolute paths,
+which are what a traceback needs. See
+`docs/decisions/DEC-0012-workspace-independent-doctor-output.md`.
+
+doctor also detects a stored scope/slug mismatch, a registered path that is not
+structurally canonical, and any location registered to more than one skill. The
+last two are derived from the *index alone, before any record is read*: a
+malformed path usually makes its own record unreadable, so a load-first ordering
+would skip exactly the entries that are worst — a defect found while writing
+those tests.
+
+The `skill-source` check validates any `provenance.x_source` a record declares,
+against the same spec the installer writes through (DEC-0014). A skill with no
+source block is not a finding.
+
+It reports and never repairs: enforcement lives at the persistence boundary, and
+a test asserts a corrupted workspace is byte-identical after a run.
+
+**Known limitation, reported not fixed.** `Registry.orphan_record_files()` scans
+`<domain>/records/`, which does not exist for skills — a skill lives in
+`<scope>/<slug>/`. An orphaned *skill* directory left by a genuine I/O
+interruption is therefore invisible to `doctor`. Readers resolve through the
+index, so a partial skill is never *readable*; but the detectability half of
+that guarantee is overstated for skills. See DEC-0015.
+
+### 2.18 CLI — `skillkernel/cli/`, `skillkernel/__main__.py`
+
+`argparse`, stdlib only. Three commands: `init`, `doctor` and
+`skill install <bundle-id>`.
+
+Exit codes are DEC-0010. The CLI is an adapter — it formats and chooses exit
+codes, holding no domain logic — and that is enforced mechanically:
+`tests/unit/test_cli_contract.py` parses the AST of every CLI module and fails
+if it imports the registry, references `record_transition`/`promote`, writes
+directly, or catches `BaseException`.
+
+`python -m skillkernel` is a second surface onto the same adapter.
+
+There is no `skill list`, `skill remove`, `skill update` or `skill search`. Each
+would be a command whose behaviour is not yet decided, and a guess encoded in an
+interface is harder to withdraw than one written down.
+
+**Why this exists as its own slice.** At the end of VS1 the repository had 483
+passing tests, clean lint and types, and a clean-checkout reproduction — while
+the command declared in `[project.scripts]` did not run at all, because
+`skillkernel/cli/` had been deleted during Milestone 0 and nothing ever executed
+what was installed. The acceptance suite now drives the generated console
+executable through `subprocess`, and a regression test reconstructs a broken
+entry point to prove that check would catch it.
+
+### 2.19 Portable bundles — `skillkernel/bundles/`, `skillkernel/assets/`
+
+A **bundle** is an immutable portable *definition* — never a portable record.
+It carries what a skill tells a consumer to do plus the static cases that let a
+workspace evaluate it, and nothing that a workspace is supposed to earn.
+
+| Module | Responsibility |
+| --- | --- |
+| `model.py` | The bundle schema, the frozen content hash, and the `x_source` spec. Refuses workspace-owned keys by name. |
+| `catalog.py` | Reads and parses through `importlib.resources`. Applies no policy and writes nothing. |
+| `installer.py` | Preflight, refusal policy, and one call each to the existing persistence, provenance and suite authorities. |
+
+The hash was frozen *before* the first bundle existed, so the hashing contract
+is a decision rather than an accident of whatever the first asset contained.
+
+Everything that can fail for a bundle- or policy-related reason runs before the
+first byte is written, including a dry run of the record the installer intends
+to create under a placeholder identifier. A rejected install burns nothing —
+not a directory, not a file, and not an identifier — and every refusal test
+asserts that against a filesystem fingerprint, guarded against the vacuous
+comparison of an empty tree with an empty tree.
+
+The shipped bundle is the universal agent policy (DEC-0008), at
+`skillkernel/assets/skills/two-method-escalation/`. It arrives at `observed`,
+reaches `candidate` through the ordinary gate, and produces its own local
+evaluation evidence. `experimental` stays correctly out of reach: it needs a
+frozen experiment, which a bundle must never ship.
+
+See DEC-0014 (what is portable), DEC-0015 (installation semantics) and DEC-0016
+(packaged resources and the content hash).
+
+---
+
 ## 3. Verification
 
-421 tests, weighted by risk rather than by count. Negative and adversarial cases
+796 tests, weighted by risk rather than by count. Negative and adversarial cases
 are the majority.
 
 | Area | Tests |
 | --- | --- |
-| Schema engine | 68 |
+| Canonical slug grammar (red-team) | 70 |
+| Promotion gates (red-team) | 22 |
+| Slice 1 components | 36 |
+| Lifecycle acceptance (end to end) | 4 |
+| CLI boundary acceptance | 15 |
+| Bundle acceptance (built wheel, clean interpreter) | 14 |
+| Bundle catalog and refusals | 32 |
+| Bundle content hash (frozen contract) | 28 |
+| Bundle installer and zero-residue refusals | 26 |
+| Source provenance, write side and read side | 25 |
+| Doctor aggregation and exception boundary | 19 |
+| CLI adapter contract | 17 |
+| Skill location invariant | 42 |
+| Doctor path normalization | 11 |
+| Location acceptance (end to end) | 9 |
+| Schema engine | 73 |
 | Skill contract and fingerprint | 66 |
 | Maturity state machine | 51 |
 | Experiments | 47 |
@@ -259,16 +470,10 @@ Everything below is design intent. None of it exists in the tree; the
 corresponding directories were removed rather than left empty, because an empty
 directory asserts a capability that is not there.
 
-- **Promotion gates** — maturity-dependent required fields and artifacts
-  (`candidate` requires purpose, applicability and provenance; `experimental`
-  adds procedure and evidence; `validated` adds a passing evaluation, failure
-  modes and verification; `trusted` requires repeated evidence across distinct
-  corpora). Append-only promotion history with a contiguous, verifiable chain.
-- **Evaluation** — deterministic scoring of activation boundaries against
-  labelled positive and negative example fixtures. It must report activation
-  true positives, true negatives, false activations and missed activations
-  *separately* from execution success; a single aggregate score could hide unsafe
-  over-activation. See `docs/decisions/DEC-0003-activation-scoring.md`.
+- **Skill relocation / cross-project promotion** — a skill's scope is now
+  immutable (DEC-0011), so there is deliberately no way to move one. Changing a
+  skill's scope requires an explicit, evidence-gated, recorded operation that
+  does not exist yet.
 - **Discovery** — deterministic candidate generation from repeated observations
   above configured thresholds. Generation is strictly separate from promotion.
 - **Skill compiler** — a self-contained consumable package whose provenance
@@ -278,22 +483,11 @@ directory asserts a capability that is not there.
   truth and `SKILL.md` a generated projection, so no fact has two mutable homes.
   Staleness, absence and manual modification must all be detectable.
   See `docs/decisions/DEC-0005-generated-skill-docs.md`.
-- **`skillkernel init`** — idempotent bootstrap that refuses destructive
-  overwrites.
-- **`skillkernel doctor`** — repository-wide integrity check reporting
-  ERROR/WARNING/INFO with a non-zero exit on invalid state. Several of its
-  checks already exist as library functions (`EvidenceLedger.verify`,
-  `ExperimentStore.verify`, `KnowledgeStore.lineage_issues`,
-  `Registry.orphan_record_files`); `doctor` will aggregate them.
+- **`skillkernel init --repair`** — `init` exists (§2.18) and refuses to
+  overwrite an existing workspace. What remains is repairing a *partial*
+  workspace and reporting created versus preserved paths.
 - **CLI** — thin wrappers over the domain APIs. No business logic in command
   handlers. Commands will be added only once the operation beneath them exists.
-- **Bundled core skills** — a small, high-confidence universal set. They will
-  enter at `candidate`, not `validated`, because they carry no repository-local
-  evidence. See `docs/decisions/DEC-0004-bundled-core-skills.md`.
-  The first intended member is the universal agent policy — the two-method
-  escalation rule and its companions — whose text already exists at
-  `docs/policies/universal-agent-rules.md` but which has no installer yet.
-  See `docs/decisions/DEC-0008-universal-agent-policy.md`.
 - **Cross-project promotion** — a discovered skill may become core only after
   independent validation in several distinct projects. Repeated use inside one
   project is not evidence of universality.

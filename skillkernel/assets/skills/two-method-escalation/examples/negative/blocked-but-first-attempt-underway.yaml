@@ -1,0 +1,4 @@
+schema_version: 1
+case_id: blocked-but-first-attempt-underway
+signals: [blocked, first-attempt-underway]
+description: Exclusions win; investigate before escalating.

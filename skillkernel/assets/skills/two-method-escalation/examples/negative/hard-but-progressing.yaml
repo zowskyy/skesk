@@ -1,0 +1,4 @@
+schema_version: 1
+case_id: hard-but-progressing
+signals: [routine-progress, difficult-task]
+description: Difficulty is not a blocker.
