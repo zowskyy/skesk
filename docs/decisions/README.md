@@ -26,3 +26,4 @@ files become the human projection of those records.
 | [DEC-0014](DEC-0014-portable-skill-definition.md) | Accepted | A bundle is a portable definition; source provenance is an `x_source` extension field |
 | [DEC-0015](DEC-0015-bundle-installation-semantics.md) | Accepted (amends DEC-0004, DEC-0008) | Bundle installation semantics: local identity, `observed` on arrival, refusal over reconciliation |
 | [DEC-0016](DEC-0016-packaged-resource-integrity.md) | Accepted | Packaged resources via `importlib.resources`; the portable content hash |
+| [DEC-0017](DEC-0017-destination-containment.md) | Accepted (extends DEC-0013) | A destination is contained by the root that owns it; components validated before construction |

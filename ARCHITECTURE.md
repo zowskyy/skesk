@@ -207,7 +207,13 @@ have relied on.
   error, not a silent fallback.
 - `core/yamlio.py` — `safe_load` only; records are data and must never be able
   to construct a Python object. Dumps preserve key order for reviewable diffs.
-- `core/paths.py` — fixed layout. `require_inside()` refuses any path escaping
+- `core/paths.py` — fixed layout, and the single path-safety authority
+  (DEC-0017). `validate_component()` holds one canonical grammar and one length
+  bound for every value that becomes a path component, reached through
+  `validate_slug()` and `validate_case_id()`. `require_within(owner, path)`
+  proves a *final destination* sits inside the root that owns it, checking
+  repository containment first so the outermost violated boundary is reported.
+  `require_inside()` refuses any path escaping
   the repository root, so a malformed registry entry cannot direct a write
   outside it.
 - `utils/hashing.py` — canonical JSON (sorted keys, fixed separators) so the
@@ -341,6 +347,15 @@ The `skill-source` check validates any `provenance.x_source` a record declares,
 against the same spec the installer writes through (DEC-0014). A skill with no
 source block is not a finding.
 
+Each persisted skill is inspected inside its own boundary. A domain error
+becomes that skill's finding and iteration continues; anything else is re-raised
+so the outer guard still records it as an internal error and marks the report
+incomplete. Both skill loops promised this in their comments and neither
+delivered it until a post-VS4 review: one damaged record aborted the loop, the
+finding arrived attributed to the check rather than the skill, and every later
+skill went uninspected. Sixty corruption permutations now assert that no corrupt
+record can suppress another's finding.
+
 It reports and never repairs: enforcement lives at the persistence boundary, and
 a test asserts a corrupted workspace is byte-identical after a run.
 
@@ -411,12 +426,15 @@ See DEC-0014 (what is portable), DEC-0015 (installation semantics) and DEC-0016
 
 ## 3. Verification
 
-796 tests, weighted by risk rather than by count. Negative and adversarial cases
+888 tests, weighted by risk rather than by count. Negative and adversarial cases
 are the majority.
 
 | Area | Tests |
 | --- | --- |
 | Canonical slug grammar (red-team) | 70 |
+| Case-id path boundary (red-team) | 63 |
+| Doctor per-skill isolation | 13 |
+| Registry domain boundary | 16 |
 | Promotion gates (red-team) | 22 |
 | Slice 1 components | 36 |
 | Lifecycle acceptance (end to end) | 4 |

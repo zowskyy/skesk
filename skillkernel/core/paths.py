@@ -316,7 +316,10 @@ class Layout:
         which is precisely how an unvalidated component once escaped.
         """
         base = self.require_inside(directory)
-        resolved = Path(path).resolve()
+        # Repository containment first, so the outermost violated boundary is the
+        # one reported. A path reaching for /etc/passwd should be described that
+        # way, not as merely leaving some inner directory.
+        resolved = self.require_inside(path)
         if resolved != base and base not in resolved.parents:
             raise UnsafeOperationError(f"{path} is outside {self.relative(base)}")
         return resolved
