@@ -22,12 +22,14 @@ from skillkernel.core.paths import Layout
 from skillkernel.evaluation.scorer import ScoreBreakdown, score_activation
 from skillkernel.evaluation.suite import (
     EvaluationSuite,
-    evaluation_input_digest,
-    load_evaluation_suite,
+    corpus_content_digest,
+    input_digest,
+    read_evaluation_inputs,
 )
 from skillkernel.evidence.ledger import EvidenceLedger
 
 __all__ = [
+    "CORPUS_DIGEST_ATTRIBUTE",
     "EVALUATION_EVIDENCE_KIND",
     "INPUT_DIGEST_ATTRIBUTE",
     "EvaluationReport",
@@ -44,7 +46,15 @@ produced them, which is why they do not satisfy ``current_only``.
 """
 
 INPUT_DIGEST_ATTRIBUTE = "evaluation_input_digest"
-"""Evidence attribute the promotion gate reads. Named once, here."""
+"""Evidence attribute the ``validated`` gate reads. Named once, here."""
+
+CORPUS_DIGEST_ATTRIBUTE = "corpus_content_digest"
+"""Evidence attribute the ``trusted`` gate reads.
+
+A recorded digest is a claim, not proof. It counts only when the evaluation's
+own snapshot is present, passes the ledger's artifact verification, parses, and
+re-derives to this same value.
+"""
 
 
 @dataclass(frozen=True)
@@ -55,6 +65,7 @@ class EvaluationReport:
     breakdown: ScoreBreakdown
     skill_fingerprint: str
     evaluation_input_digest: str
+    corpus_content_digest: str
     evaluated_at: str
     pass_threshold: float
     max_false_activation_rate: float
@@ -96,6 +107,7 @@ class EvaluationReport:
             "evaluated_at": self.evaluated_at,
             "skill_fingerprint": self.skill_fingerprint,
             "evaluation_input_digest": self.evaluation_input_digest,
+            "corpus_content_digest": self.corpus_content_digest,
             "thresholds": {
                 "pass_threshold": self.pass_threshold,
                 "max_false_activation_rate": self.max_false_activation_rate,
@@ -105,9 +117,19 @@ class EvaluationReport:
             "results": self.breakdown.to_document(),
         }
 
-    def render_json(self) -> bytes:
-        """Deterministic serialization: same inputs, byte-identical output."""
-        return json.dumps(self.to_document(), indent=2, sort_keys=True).encode("utf-8") + b"\n"
+    def render_json(self, snapshot: dict[str, Any] | None = None) -> bytes:
+        """Deterministic serialization: same inputs, byte-identical output.
+
+        With ``snapshot`` the rendered artifact also carries the exact parsed
+        inputs this evaluation consumed. The artifact is already hashed and
+        chained by the evidence ledger, so preserving the inputs inside it makes
+        them immutable and independently verifiable without inventing a second
+        artifact store.
+        """
+        document = self.to_document()
+        if snapshot is not None:
+            document["inputs"] = snapshot
+        return json.dumps(document, indent=2, sort_keys=True).encode("utf-8") + b"\n"
 
 
 def derive_verdict(
@@ -143,11 +165,14 @@ def evaluate_skill(
     from skillkernel.skills.store import SkillStore  # local import avoids a cycle
 
     skill = SkillStore(layout).require(skill_id)
-    suite = load_evaluation_suite(layout, skill_id)
-    # Identify what is being consumed, at the moment it is consumed. Recording
-    # it afterwards from the filesystem would describe a state that may already
-    # have moved on.
-    input_digest = evaluation_input_digest(layout, skill_id)
+    # Read the inputs once. Scoring, both digests and the preserved snapshot are
+    # all derived from this one structure, so they cannot disagree about what was
+    # evaluated -- and re-reading the filesystem for any of them afterwards would
+    # describe a state that may already have moved on.
+    inputs = read_evaluation_inputs(layout, skill_id)
+    suite = inputs.suite()
+    live_digest = input_digest(inputs)
+    content_digest = corpus_content_digest(inputs)
     breakdown = score_activation(skill, suite.cases)
     verdict, reasons = derive_verdict(breakdown, suite)
 
@@ -157,7 +182,8 @@ def evaluate_skill(
         verdict=verdict,
         breakdown=breakdown,
         skill_fingerprint=skill.fingerprint(),
-        evaluation_input_digest=input_digest,
+        evaluation_input_digest=live_digest,
+        corpus_content_digest=content_digest,
         evaluated_at=now or now_iso(),
         pass_threshold=suite.pass_threshold,
         max_false_activation_rate=suite.max_false_activation_rate,
@@ -175,7 +201,7 @@ def evaluate_skill(
         project=project,
         source_type="evaluation",
         source_detail=f"activation-boundary scorer v{suite.scorer_version}",
-        artifact_bytes=report.render_json(),
+        artifact_bytes=report.render_json(inputs.snapshot_document()),
         artifact_name=f"evaluation-{suite.corpus_id}.json",
         media_type="application/json",
         skill=skill_id,
@@ -183,7 +209,8 @@ def evaluate_skill(
         attributes={
             "verdict": verdict,
             "corpus_id": suite.corpus_id,
-            INPUT_DIGEST_ATTRIBUTE: input_digest,
+            INPUT_DIGEST_ATTRIBUTE: live_digest,
+            CORPUS_DIGEST_ATTRIBUTE: content_digest,
             "accuracy": round(breakdown.accuracy, 6),
             "true_positives": breakdown.true_positives,
             "true_negatives": breakdown.true_negatives,
@@ -200,6 +227,7 @@ def evaluate_skill(
         breakdown=report.breakdown,
         skill_fingerprint=report.skill_fingerprint,
         evaluation_input_digest=report.evaluation_input_digest,
+        corpus_content_digest=report.corpus_content_digest,
         evaluated_at=report.evaluated_at,
         pass_threshold=report.pass_threshold,
         max_false_activation_rate=report.max_false_activation_rate,

@@ -41,7 +41,9 @@ caught it.
 sha256( ALGORITHM_ID || file_count || Σ framed(path, canonical_json(parsed content)) )
 ```
 
-- Every portable file participates, sorted by POSIX relative path.
+- Every file the catalog *enumerates* participates, sorted by POSIX relative
+  path: `bundle.yaml` and `examples/{positive,negative}/*.yaml`. That is the
+  coverage, stated as coverage — see **What it does not cover** below.
 - Each file's *parsed* content is rendered through the existing `canonical_json`.
 - Each entry is length-prefixed on both path and payload, with fixed-width
   big-endian lengths, so no delimiter can be forged inside either and no two
@@ -56,8 +58,9 @@ sha256( ALGORITHM_ID || file_count || Σ framed(path, canonical_json(parsed cont
 The hash must identify the *portable definition*, not a particular file
 rendering. Hashing parsed content makes it immune to indentation, key ordering
 and CRLF-versus-LF drift, so the same content hashes identically on every
-machine — while preserving every semantic distinction: a changed scalar, a
-reordered list, a renamed path, and an added or removed file all change it.
+machine — while preserving every semantic distinction **within the enumerated
+set**: a changed scalar, a reordered list, a renamed path, and an added or
+removed enumerated file all change it.
 
 **Precondition, stated because it is load-bearing.** `canonical_json` falls back
 to `str()` for a type it does not know, which would let a YAML date collide with
@@ -65,11 +68,25 @@ the equivalent quoted string. The bundle schema types every field, so that
 collision is unreachable for a bundle that has been validated — and validation
 always runs first. This was probed rather than assumed, and the probe is a test.
 
-### What it never covers
+### What it does not cover
 
-The installation directory, the wheel's own bytes, the workspace path, the local
-record identifier, timestamps, lifecycle state and evidence. **The container is
-never hashed.** Two independent installs of the same bundle into two different
+**Wording corrected in VS6; the implementation is unchanged.** The original text
+claimed "every portable file participates" and that "an added or removed file"
+always changes the hash. Measurement falsified the second: seven classes of added
+content leave the hash byte-identical — a case in a nested directory under
+`examples/<polarity>/`, an unrelated nested file, a non-`.yaml` file beside the
+cases, a file directly in `examples/`, an unexpected polarity directory, an extra
+file in the bundle root, and a root `README.md`. None of them is enumerated, so
+none is hashed; none is installed either, so none can reach a workspace. A
+directory whose name ends in `.yaml` fails closed.
+
+Whether the packaging grammar should *refuse* such content rather than ignore it
+is a real question and remains deferred. This is a claim correction only: no
+enumeration rule, hashing implementation or frozen hash changed.
+
+Also never covered: the installation directory, the wheel's own bytes, the
+workspace path, the local record identifier, timestamps, lifecycle state and
+evidence. **The container is never hashed.** Two independent installs of the same bundle into two different
 workspaces produce the same hash, and the acceptance test compares the hash
 computed in the wheel against the one computed in the checkout.
 

@@ -320,6 +320,21 @@ ledger, and stamps it with the skill's **behaviour fingerprint** at evaluation
 time. That stamp is what lets the `validated` gate ask whether an evaluation is
 still about this skill.
 
+It also identifies the inputs (DEC-0019). `EvaluationInputs` is read once and
+everything derives from it — scoring, both digests and the snapshot — so the four
+cannot disagree about what was evaluated. `evaluation_input_digest` identifies
+the live input state for `validated`; `corpus_content_digest` identifies the case
+set alone, keyed by `case_id`, for `trusted`; and the exact parsed inputs are
+preserved inside the evaluation's own evidence artifact, which the ledger already
+hashes and chains. Until VS6 an evaluation's verdict outlived its inputs: with
+every negative case deleted, or the suite gone entirely, the passing evidence
+still counted and `doctor` was silent.
+
+Authoring a suite now yields that suite. `write_evaluation_suite` retires managed
+case files the pass did not write — direct `*.yaml` in the two polarity
+directories only, never recursively — because it previously merged, so a suite
+labelled `corpus-b` loaded as `corpus-a ∪ corpus-b`.
+
 ### 2.15 Promotion — `skillkernel/promotion/`
 
 Three checks in a fixed order: shape (the state machine), earned (the gate),
@@ -329,8 +344,16 @@ to unwind.
 
 Gate requirements are in `docs/decisions/DEC-0009-slice1-gate-scope.md`. The
 `validated` gate requires a passing evaluation whose fingerprint matches the
-skill as it currently stands; a stale evaluation is refused with a diagnostic
-saying so and naming the remedy.
+skill as it currently stands **and** whose recorded input digest matches the
+inputs on disk; a stale evaluation is refused with a diagnostic saying so and
+naming the remedy.
+
+`trusted` asks a different question and uses a different notion of currentness.
+A skill has one live suite, so requiring every counted evaluation to match it
+made "N distinct corpora" unsatisfiable. It counts evaluations that remain
+*independently verifiable* against their own preserved snapshots, and measures
+distinctness over corpus content, so rewriting `corpus_id` cannot manufacture a
+second corpus (DEC-0019).
 
 ### 2.16 Provenance — `skillkernel/validation/provenance.py`
 
@@ -467,7 +490,7 @@ See DEC-0014 (what is portable), DEC-0015 (installation semantics) and DEC-0016
 
 ## 3. Verification
 
-951 tests, weighted by risk rather than by count. Negative and adversarial cases
+1025 tests, weighted by risk rather than by count. Negative and adversarial cases
 are the majority.
 
 | Area | Tests |

@@ -28,18 +28,24 @@ Every gate also rejects any skill resting on refuted knowledge, at any maturity.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from skillkernel.core.config import KernelConfig
 from skillkernel.core.errors import SkillKernelError
 from skillkernel.core.paths import Layout
-from skillkernel.evaluation.runner import INPUT_DIGEST_ATTRIBUTE
-from skillkernel.evaluation.suite import evaluation_input_digest
+from skillkernel.evaluation.runner import CORPUS_DIGEST_ATTRIBUTE, INPUT_DIGEST_ATTRIBUTE
+from skillkernel.evaluation.suite import (
+    EvaluationInputs,
+    corpus_content_digest,
+    evaluation_input_digest,
+)
 from skillkernel.evidence.ledger import EvidenceLedger
 from skillkernel.experiments.store import ExperimentStore
 from skillkernel.knowledge.store import KnowledgeStore
 from skillkernel.skills.model import SkillRecord
+from skillkernel.utils.hashing import sha256_file
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from skillkernel.evidence.model import EvidenceRecord
@@ -50,6 +56,7 @@ __all__ = [
     "check_gate",
     "current_input_digest",
     "passing_evaluations",
+    "verifiable_evaluations",
 ]
 
 EVALUATION_KIND = "evaluation_report"
@@ -135,6 +142,63 @@ def passing_evaluations(
     return found
 
 
+def verifiable_evaluations(layout: Layout, skill: SkillRecord) -> list[EvidenceRecord]:
+    """Passing evaluations that can still be checked against their own inputs.
+
+    ``validated`` asks about now: does evidence exist for this skill against the
+    inputs on disk today. ``trusted`` asks about accumulated history: has this
+    been independently confirmed across genuinely distinct corpora. A skill has
+    one live suite, so demanding that every counted evaluation match it made the
+    second question unanswerable -- and before the snapshot existed, the only
+    way to answer it was to count evidence nobody could check.
+
+    So this does not ask whether an evaluation is live. It asks whether it is
+    still *provable*: the snapshot it was written with is present, survives the
+    ledger's artifact verification, parses, and re-derives the very corpus digest
+    the record claims. A digest string on its own proves nothing; it is the
+    preserved inputs that do.
+
+    The skill fingerprint requirement is unchanged: evidence about behaviour the
+    skill no longer has is not confirmation of the behaviour it has now.
+    """
+    fingerprint = skill.fingerprint()
+    found: list[EvidenceRecord] = []
+    for record in EvidenceLedger(layout).for_skill(skill.id):
+        if record.kind != EVALUATION_KIND:
+            continue
+        if str(record.attributes.get("verdict")) != "pass":
+            continue
+        if record.skill_fingerprint != fingerprint:
+            continue
+        claimed = record.attributes.get(CORPUS_DIGEST_ATTRIBUTE)
+        if not claimed:
+            # Pre-snapshot evidence. Immutable history, never proof.
+            continue
+        if _replayed_corpus_digest(layout, record) != str(claimed):
+            continue
+        found.append(record)
+    return found
+
+
+def _replayed_corpus_digest(layout: Layout, record: EvidenceRecord) -> str | None:
+    """Re-derive corpus identity from the evaluation's preserved snapshot."""
+    if record.artifact is None:
+        return None
+    path = layout.root / str(record.artifact["path"])
+    if not path.is_file():
+        return None
+    try:
+        if sha256_file(path) != str(record.artifact["sha256"]):
+            # The ledger already calls this corruption; it is never evidence.
+            return None
+        document = json.loads(path.read_text(encoding="utf-8"))
+        snapshot = document["inputs"]
+        inputs = EvaluationInputs.from_snapshot(snapshot, source=record.id)
+        return corpus_content_digest(inputs)
+    except (OSError, ValueError, KeyError, TypeError, SkillKernelError):
+        return None
+
+
 def _check_knowledge(layout: Layout, skill: SkillRecord, report: GateReport) -> None:
     store = KnowledgeStore(layout)
     for knowledge_id in skill.knowledge_ids:
@@ -215,15 +279,18 @@ def _check_validated(layout: Layout, skill: SkillRecord, report: GateReport) -> 
 def _check_trusted(
     layout: Layout, skill: SkillRecord, config: KernelConfig, report: GateReport
 ) -> None:
-    current = passing_evaluations(layout, skill, current_only=True)
-    corpora = sorted({str(record.attributes.get("corpus_id")) for record in current})
+    # Distinctness is measured over preserved scoring content, not over labels:
+    # rewriting corpus_id must never manufacture a second corpus, and the same
+    # cases re-filed under new names must never count twice.
+    current = verifiable_evaluations(layout, skill)
+    corpora = sorted({str(record.attributes[CORPUS_DIGEST_ATTRIBUTE]) for record in current})
     report.evidence_used.extend(record.id for record in current)
     report.corpora_used.extend(corpora)
     required = config.min_trusted_distinct_corpora
     if len(corpora) < required:
         report.reasons.append(
-            f"has passing evaluations across {len(corpora)} distinct corpus/corpora "
-            f"({', '.join(corpora) or 'none'}), but 'trusted' requires {required}. "
+            f"has independently verifiable passing evaluations across {len(corpora)} "
+            f"distinct corpus/corpora, but 'trusted' requires {required}. "
             "Repeated evidence from one corpus is repetition, not independent confirmation."
         )
 

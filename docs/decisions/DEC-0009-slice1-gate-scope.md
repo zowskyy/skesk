@@ -17,7 +17,7 @@ No. Slice 1 gates on **record fields and evidence only**:
 | `candidate` | purpose, `applies_when`, `do_not_apply_when`, provenance |
 | `experimental` | procedure; a frozen experiment with a recorded result |
 | `validated` | success conditions, failure modes, verification; a passing evaluation whose fingerprint matches the skill |
-| `trusted` | passing evaluations across N distinct corpora |
+| `trusted` | passing evaluations across N distinct corpora (see DEC-0019) |
 | `deprecated` | a stated reason |
 
 Refuted knowledge disqualifies at every maturity.
@@ -47,3 +47,16 @@ building the slice.
 When the `SKILL.md` generator lands. Document requirements then become
 checkable by regeneration and comparison, which is a real check rather than a
 file-exists check. Until then the gates claim only what they verify.
+
+## Amendment — DEC-0019
+
+"Distinct corpora" means distinct **verifiable scoring content**, not distinct
+`corpus_id` strings. A label was never evidence of distinctness: VS6 measured a
+suite labelled `corpus-b` whose content was `corpus-a ∪ corpus-b`, and nothing
+detected it.
+
+An evaluation contributes to `trusted` only if its preserved input snapshot still
+verifies and re-derives the corpus digest it claims. The requirement itself is
+unchanged and not weakened — repeated evidence from one corpus is still
+repetition rather than independent confirmation. What changed is that the
+requirement can now be checked.

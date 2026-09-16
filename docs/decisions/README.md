@@ -18,13 +18,14 @@ files become the human projection of those records.
 | [DEC-0006](DEC-0006-behavior-fingerprint.md) | Accepted | Behaviour fingerprint covers behavioural fields only |
 | [DEC-0007](DEC-0007-tamper-evidence.md) | Accepted | The evidence ledger provides tamper evidence, not immutability |
 | [DEC-0008](DEC-0008-universal-agent-policy.md) | Accepted, implemented (amended by DEC-0015) | Universal agent policy ships as a bundled core skill, installed explicitly by `skillkernel skill install` |
-| [DEC-0009](DEC-0009-slice1-gate-scope.md) | Accepted | Promotion gates check fields and evidence, not generated documents |
+| [DEC-0009](DEC-0009-slice1-gate-scope.md) | Accepted (amended by DEC-0019) | Promotion gates check fields and evidence, not generated documents |
 | [DEC-0010](DEC-0010-cli-exit-codes.md) | Accepted | CLI exit-code doctrine; exit 70 for unexpected internal failure |
 | [DEC-0011](DEC-0011-skill-location-identity.md) | Accepted | A skill's location-bearing identity (`scope`, `slug`) is immutable through ordinary persistence |
 | [DEC-0012](DEC-0012-workspace-independent-doctor-output.md) | Accepted | Machine-readable doctor output is workspace-independent |
 | [DEC-0013](DEC-0013-canonical-path-components.md) | Accepted | Canonical path components are strictly validated |
 | [DEC-0014](DEC-0014-portable-skill-definition.md) | Accepted | A bundle is a portable definition; source provenance is an `x_source` extension field |
 | [DEC-0015](DEC-0015-bundle-installation-semantics.md) | Accepted (amends DEC-0004, DEC-0008; amended by DEC-0018) | Bundle installation semantics: local identity, `observed` on arrival, refusal over reconciliation |
-| [DEC-0016](DEC-0016-packaged-resource-integrity.md) | Accepted | Packaged resources via `importlib.resources`; the portable content hash |
+| [DEC-0016](DEC-0016-packaged-resource-integrity.md) | Accepted (coverage wording corrected in VS6) | Packaged resources via `importlib.resources`; the portable content hash |
 | [DEC-0017](DEC-0017-destination-containment.md) | Accepted (extends DEC-0013) | A destination is contained by the root that owns it; components validated before construction |
 | [DEC-0018](DEC-0018-physical-ownership.md) | Accepted (amends DEC-0015) | Physical state does not acquire logical ownership, enforced at the allocation boundary; orphan discovery follows each domain's real topology |
+| [DEC-0019](DEC-0019-evaluation-input-identity.md) | Accepted (amends DEC-0009) | An evaluation identifies the inputs it consumed; distinct corpora are distinct verifiable scoring content, not distinct labels |

@@ -122,6 +122,22 @@ away from the content it names.
 CASE_SCORING_FIELDS = ("schema_version", "case_id", "expected", "signals")
 """Case fields the scorer reads. The file's path is its provenance."""
 
+CORPUS_CONTENT_ALGORITHM_ID = b"skillkernel-corpus-content-v1\x00"
+"""Domain separator for corpus content identity.
+
+Deliberately distinct from the input digest, because the two answer different
+questions. The input digest identifies *the live input state* -- every consumed
+file, keyed by path, scoring fields and provenance together. This identifies
+*the case set*: cases only, keyed by ``case_id``, scoring content only.
+
+So a renamed file, a retuned threshold, a bumped ``scorer_version`` and above all
+a rewritten ``corpus_id`` all leave corpus identity alone, while a changed,
+added or removed case does not. ``trusted`` counts distinct corpora, and a label
+was never evidence of distinctness.
+"""
+
+SNAPSHOT_SCHEMA_VERSION = 1
+
 IDENTITY_EXCLUDED_FIELDS = ("description",)
 """Documentation carried beside the inputs, reaching no consumer.
 
@@ -139,6 +155,102 @@ def _identity_fields(document: Mapping[str, Any], fields: Sequence[str]) -> dict
         for key, value in sorted(document.items())
         if (key in keep or key.startswith(EXTENSION_PREFIX)) and key not in IDENTITY_EXCLUDED_FIELDS
     }
+
+
+@dataclass(frozen=True)
+class EvaluationInputs:
+    """The one parsed representation of everything an evaluation consumes.
+
+    Scoring execution, both digests and the immutable snapshot are all derived
+    from this single structure, read once. Re-reading the filesystem for any of
+    them would let the four disagree about what was evaluated -- which is the
+    class of defect this slice exists to remove, not to reproduce.
+
+    :meth:`from_snapshot` rebuilds the same structure from a preserved
+    snapshot, so a historical evaluation is verified by exactly the code that
+    produced it.
+    """
+
+    skill_id: str
+    definition_path: str
+    definition: dict[str, Any]
+    cases: tuple[tuple[str, dict[str, Any]], ...]
+
+    def suite(self) -> EvaluationSuite:
+        data = self.definition
+        return EvaluationSuite(
+            skill_id=self.skill_id,
+            corpus_id=str(data["corpus_id"]),
+            pass_threshold=float(data["pass_threshold"]),
+            max_false_activation_rate=float(data["max_false_activation_rate"]),
+            scorer=str(data["scorer"]),
+            scorer_version=str(data["scorer_version"]),
+            cases=tuple(
+                EvaluationCase.from_document(document, source=relative)
+                for relative, document in self.cases
+            ),
+        )
+
+    def snapshot_document(self) -> dict[str, Any]:
+        """The replayable record of these inputs, for the evidence artifact."""
+        return {
+            "schema_version": SNAPSHOT_SCHEMA_VERSION,
+            "skill": self.skill_id,
+            "definition_path": self.definition_path,
+            "documents": {self.definition_path: self.definition, **dict(self.cases)},
+        }
+
+    @classmethod
+    def from_snapshot(cls, document: Mapping[str, Any], *, source: str) -> EvaluationInputs:
+        """Rebuild preserved inputs, refusing anything that does not parse."""
+        try:
+            definition_path = str(document["definition_path"])
+            documents = dict(document["documents"])
+            definition = dict(documents.pop(definition_path))
+            skill_id = str(document["skill"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValidationError(f"{source} is not a readable evaluation snapshot: {exc}") from exc
+        return cls(
+            skill_id=skill_id,
+            definition_path=definition_path,
+            definition=definition,
+            cases=tuple((str(key), dict(value)) for key, value in sorted(documents.items())),
+        )
+
+
+def read_evaluation_inputs(layout: Layout, skill_id: str) -> EvaluationInputs:
+    """Read and validate every file this skill's evaluation would consume."""
+    skill_dir = _skill_dir(layout, skill_id)
+    path = definition_path(layout, skill_dir)
+    if not path.is_file():
+        raise ValidationError(
+            f"{skill_id} has no evaluation definition at {layout.relative(path)}; "
+            "author one with write_evaluation_suite() before evaluating"
+        )
+    data = dict(EVAL_DEFINITION_SCHEMA.validate(load_yaml_file(path), source=str(path)))
+    if data["skill"] != skill_id:
+        raise ValidationError(
+            f"{layout.relative(path)} declares skill {data['skill']!r} but belongs to {skill_id}"
+        )
+
+    cases: list[tuple[str, dict[str, Any]]] = []
+    for polarity in ("positive", "negative"):
+        directory = examples_dir(layout, skill_dir, polarity)
+        if not directory.is_dir():
+            continue
+        for case_file in sorted(directory.glob("*.yaml")):
+            document = dict(CASE_SCHEMA.validate(load_yaml_file(case_file), source=str(case_file)))
+            cases.append((layout.relative(case_file), document))
+
+    if not cases:
+        raise ValidationError(f"{skill_id} has an evaluation definition but no example cases")
+
+    return EvaluationInputs(
+        skill_id=skill_id,
+        definition_path=layout.relative(path),
+        definition=data,
+        cases=tuple(cases),
+    )
 
 
 def _frame(path: str, payload: bytes) -> bytes:
@@ -255,6 +367,7 @@ def write_evaluation_suite(
     EVAL_DEFINITION_SCHEMA.validate(definition, source=f"{skill_id} evaluation definition")
 
     seen: set[str] = set()
+    written: dict[str, set[Path]] = {}
     for polarity, entries, expected in (
         ("positive", positive, "applies"),
         ("negative", negative, "does_not_apply"),
@@ -282,76 +395,64 @@ def write_evaluation_suite(
             # insufficient: containment has to be asserted of the final path.
             destination = layout.require_within(directory, directory / f"{case_id}.yaml")
             write_yaml_file(destination, document, header=_CASE_HEADER)
+            written.setdefault(polarity, set()).add(destination.resolve())
 
+    _retire_replaced_cases(layout, skill_dir, written)
     write_yaml_file(definition_path(layout, skill_dir), definition, header=_DEFINITION_HEADER)
     return load_evaluation_suite(layout, skill_id)
 
 
-@dataclass(frozen=True)
-class _EvaluationInputs:
-    """Every file an evaluation consumes, validated, with its role explicit.
+def _retire_replaced_cases(
+    layout: Layout, skill_dir: Path, written: Mapping[str, set[Path]]
+) -> None:
+    """Remove managed case files this authoring pass did not write.
 
-    One enumeration serves both the suite and its digest. Two enumerations would
-    be two definitions of "what an evaluation reads", and the digest would
-    eventually claim identity over a set the scorer no longer uses.
+    Authoring corpus B used to leave corpus A's cases in place, so the suite
+    labelled B actually loaded A union B -- measured, and the reason ``trusted``
+    could not mean what DEC-0009 says. Writing a corpus now yields that corpus.
+
+    Deliberately narrow. Only direct ``*.yaml`` files in the two managed
+    polarity directories are considered, never recursively: nested directories,
+    non-YAML files and every other deferred question on disk are left exactly as
+    they are. New files are written first, so an interruption leaves the old
+    merge behaviour rather than a suite with cases missing.
+
+    Each removal is proved to be inside the directory that owns it (DEC-0017)
+    before it happens; this is the only deletion the kernel performs.
     """
-
-    definition_path: str
-    definition: dict[str, Any]
-    cases: tuple[tuple[str, dict[str, Any]], ...]
-
-
-def _read_inputs(layout: Layout, skill_id: str) -> _EvaluationInputs:
-    skill_dir = _skill_dir(layout, skill_id)
-    path = definition_path(layout, skill_dir)
-    if not path.is_file():
-        raise ValidationError(
-            f"{skill_id} has no evaluation definition at {layout.relative(path)}; "
-            "author one with write_evaluation_suite() before evaluating"
-        )
-    data = dict(EVAL_DEFINITION_SCHEMA.validate(load_yaml_file(path), source=str(path)))
-    if data["skill"] != skill_id:
-        raise ValidationError(
-            f"{layout.relative(path)} declares skill {data['skill']!r} but belongs to {skill_id}"
-        )
-
-    cases: list[tuple[str, dict[str, Any]]] = []
     for polarity in ("positive", "negative"):
         directory = examples_dir(layout, skill_dir, polarity)
         if not directory.is_dir():
             continue
-        for case_file in sorted(directory.glob("*.yaml")):
-            document = dict(CASE_SCHEMA.validate(load_yaml_file(case_file), source=str(case_file)))
-            cases.append((layout.relative(case_file), document))
+        keep = written.get(polarity, set())
+        for existing in sorted(directory.glob("*.yaml")):
+            if not existing.is_file() or existing.resolve() in keep:
+                continue
+            layout.require_within(directory, existing).unlink()
 
-    if not cases:
-        raise ValidationError(f"{skill_id} has an evaluation definition but no example cases")
 
-    return _EvaluationInputs(
-        definition_path=layout.relative(path), definition=data, cases=tuple(cases)
-    )
+def _digest(algorithm: bytes, framed: Mapping[str, bytes]) -> str:
+    body = b"".join(_frame(key, framed[key]) for key in sorted(framed))
+    return f"sha256:{sha256_bytes(algorithm + len(framed).to_bytes(8, 'big') + body)}"
 
 
 def evaluation_input_digest(layout: Layout, skill_id: str) -> str:
-    """Identify the evaluation inputs this skill would currently be scored against.
+    """Identity of the evaluation inputs currently on disk for this skill."""
+    return input_digest(read_evaluation_inputs(layout, skill_id))
 
-    An *identity and provenance* claim, not a model of scoring semantics: it
-    answers "are these the inputs that produced that evidence?". Hashing parsed
-    content makes indentation, quoting, key order and line endings irrelevant,
-    but no value-level normalization is applied. A reordered ``signals`` list
-    therefore changes the digest even though ``applies_to`` builds a set and
-    would score it identically -- the file changed, so the identity changed.
 
-    That asymmetry is deliberate. Re-implementing the scorer's notion of
-    equivalence here would put the same semantics in two places, and the cost of
-    being wrong is lopsided: a false "not current" costs one deterministic
-    re-run, a false "current" costs a wrong promotion.
+def input_digest(inputs: EvaluationInputs) -> str:
+    """Identity of one parsed input state: every file, keyed by its path.
 
-    Raises the same refusals as :func:`load_evaluation_suite`, so a caller that
-    cannot obtain a digest has been told why. Callers deciding currentness must
-    treat that as *not current* rather than skipping the check.
+    An *identity and provenance* claim, not a model of scoring semantics.
+    Hashing parsed content makes indentation, quoting, key order and line
+    endings irrelevant, but no value-level normalization is applied: a reordered
+    ``signals`` list changes the digest even though ``applies_to`` builds a set
+    and would score it identically. Re-implementing the scorer's notion of
+    equivalence here would put the same semantics in two places, and the costs
+    are lopsided -- a false "not current" costs one deterministic re-run, a
+    false "current" costs a wrong promotion.
     """
-    inputs = _read_inputs(layout, skill_id)
     framed = {
         inputs.definition_path: canonical_json(
             _identity_fields(inputs.definition, (*SUITE_SCORING_FIELDS, *SUITE_PROVENANCE_FIELDS))
@@ -359,26 +460,25 @@ def evaluation_input_digest(layout: Layout, skill_id: str) -> str:
     }
     for relative, document in inputs.cases:
         framed[relative] = canonical_json(_identity_fields(document, CASE_SCORING_FIELDS))
+    return _digest(EVALUATION_INPUT_ALGORITHM_ID, framed)
 
-    body = b"".join(_frame(path, framed[path]) for path in sorted(framed))
-    digest = sha256_bytes(EVALUATION_INPUT_ALGORITHM_ID + len(framed).to_bytes(8, "big") + body)
-    return f"sha256:{digest}"
+
+def corpus_content_digest(inputs: EvaluationInputs) -> str:
+    """Identity of the case set alone, keyed by ``case_id``.
+
+    What ``trusted`` counts. The definition is excluded entirely: a corpus is
+    its cases, so retuning a threshold, bumping ``scorer_version`` or rewriting
+    ``corpus_id`` does not make a second corpus, and re-filing the same cases
+    under different filenames does not either. Two evaluations are independent
+    confirmation only when the cases genuinely differ.
+    """
+    framed = {
+        str(document["case_id"]): canonical_json(_identity_fields(document, CASE_SCORING_FIELDS))
+        for _relative, document in inputs.cases
+    }
+    return _digest(CORPUS_CONTENT_ALGORITHM_ID, framed)
 
 
 def load_evaluation_suite(layout: Layout, skill_id: str) -> EvaluationSuite:
     """Load a skill's evaluation suite, raising if it has none."""
-    inputs = _read_inputs(layout, skill_id)
-    data = inputs.definition
-    cases = [
-        EvaluationCase.from_document(document, source=relative)
-        for relative, document in inputs.cases
-    ]
-    return EvaluationSuite(
-        skill_id=skill_id,
-        corpus_id=str(data["corpus_id"]),
-        pass_threshold=float(data["pass_threshold"]),
-        max_false_activation_rate=float(data["max_false_activation_rate"]),
-        scorer=str(data["scorer"]),
-        scorer_version=str(data["scorer_version"]),
-        cases=tuple(cases),
-    )
+    return read_evaluation_inputs(layout, skill_id).suite()
