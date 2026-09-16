@@ -28,7 +28,7 @@ from skillkernel.bundles.model import SOURCE_FIELD, Bundle, validate_x_source
 from skillkernel.core.clock import now_iso
 from skillkernel.core.errors import UnsafeOperationError, ValidationError
 from skillkernel.core.ids import SKILL, format_id
-from skillkernel.core.paths import Layout
+from skillkernel.core.paths import Layout, validate_case_id
 from skillkernel.evaluation.suite import write_evaluation_suite
 from skillkernel.skills.model import SKILL_SCOPES, SkillRecord, new_skill_document
 from skillkernel.skills.store import EDITABLE_FIELDS, SkillStore
@@ -171,14 +171,21 @@ def _dry_run(
 
 
 def _check_case_ids(bundle: Bundle) -> None:
-    """Refuse a duplicate case id before the suite writer would.
+    """Refuse a malformed or duplicate case id before the suite writer would.
 
-    ``write_evaluation_suite`` raises on a duplicate, but it runs after the
-    skill exists. Checking here keeps the refusal on the zero-write side.
+    ``write_evaluation_suite`` refuses both, but it runs after the skill exists.
+    Checking here keeps the refusal on the zero-write side, before
+    ``allocate_id`` has burned an identifier.
+
+    The catalog already rejects an escaping case id at load time, so a packaged
+    bundle cannot reach this point carrying one. It is checked again because a
+    ``Bundle`` can be constructed in memory, and the zero-write guarantee must
+    not depend on how the caller obtained it.
     """
     seen: set[str] = set()
     for case in (*bundle.positive_cases, *bundle.negative_cases):
         case_id = str(case["case_id"])
+        validate_case_id(case_id)
         if case_id in seen:
             raise ValidationError(
                 f"bundle {bundle.bundle_id!r} uses case id {case_id!r} more than once; "

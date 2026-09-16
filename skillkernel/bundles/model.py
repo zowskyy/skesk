@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from skillkernel.core.errors import ValidationError
-from skillkernel.core.paths import SKILL_SCOPES, is_canonical_slug
+from skillkernel.core.paths import SKILL_SCOPES, is_canonical_slug, validate_case_id
 from skillkernel.core.schema import (
     Schema,
     Spec,
@@ -46,6 +46,7 @@ __all__ = [
     "Bundle",
     "content_hash",
     "is_content_hash",
+    "validate_case",
     "validate_manifest",
     "validate_x_source",
 ]
@@ -292,6 +293,19 @@ def validate_manifest(document: Any, *, source: str) -> dict[str, Any]:
         raise ValidationError(
             f"{source} declares slug {data['slug']!r}, which is not a canonical slug"
         )
+    return data
+
+
+def validate_case(document: Any, *, source: str) -> dict[str, Any]:
+    """Validate one bundled case, including its id as a path component.
+
+    The schema types ``case_id`` as a non-empty string, which says nothing about
+    the filename it becomes. Checking the grammar here -- the same place
+    :func:`validate_manifest` checks the slug -- means a bundle carrying an
+    escaping case id cannot even load, so no caller has to remember to guard it.
+    """
+    data = dict(BUNDLE_CASE_SCHEMA.validate(document, source=source))
+    validate_case_id(data["case_id"])
     return data
 
 

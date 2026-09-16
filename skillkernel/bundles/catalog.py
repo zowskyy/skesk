@@ -16,10 +16,10 @@ from importlib.resources.abc import Traversable
 from typing import Any
 
 from skillkernel.bundles.model import (
-    BUNDLE_CASE_SCHEMA,
     MANIFEST_FILENAME,
     Bundle,
     content_hash,
+    validate_case,
     validate_manifest,
 )
 from skillkernel.core.errors import RecordNotFoundError, ValidationError
@@ -118,11 +118,9 @@ def load_bundle(bundle_id: str, *, root: Traversable | None = None) -> Bundle:
             if not entry.name.endswith(".yaml"):
                 continue
             relative = f"examples/{polarity}/{entry.name}"
-            case = dict(
-                BUNDLE_CASE_SCHEMA.validate(
-                    _read_yaml(entry, source=f"{bundle_id}/{relative}"),
-                    source=f"{bundle_id}/{relative}",
-                )
+            case = validate_case(
+                _read_yaml(entry, source=f"{bundle_id}/{relative}"),
+                source=f"{bundle_id}/{relative}",
             )
             documents[relative] = case
             cases[polarity].append(case)

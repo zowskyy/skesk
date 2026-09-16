@@ -30,9 +30,9 @@ observation → hypothesis → experiment → evidence → knowledge
 The kernel is infrastructure. It must never encode the engineering methods of
 any one project; it is the mechanism that *learns* them.
 
-**Status: Milestone 0 (foundation) is verified. No vertical slice is
-implemented yet.** Read `ARCHITECTURE.md` before assuming a capability exists —
-an absent module is absent on purpose.
+**Status: Milestone 0 and Vertical Slices 1–4 are verified.** Read
+`ARCHITECTURE.md` before assuming a capability exists — an absent module is
+absent on purpose.
 
 ---
 
