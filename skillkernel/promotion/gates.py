@@ -41,7 +41,7 @@ from skillkernel.evaluation.suite import (
     corpus_content_digest,
     evaluation_input_digest,
 )
-from skillkernel.evidence.ledger import EvidenceLedger
+from skillkernel.evidence.ledger import EvidenceLedger, resolve_declared_artifact
 from skillkernel.experiments.store import ExperimentStore
 from skillkernel.knowledge.store import KnowledgeStore
 from skillkernel.skills.model import SkillRecord
@@ -184,7 +184,13 @@ def _replayed_corpus_digest(layout: Layout, record: EvidenceRecord) -> str | Non
     """Re-derive corpus identity from the evaluation's preserved snapshot."""
     if record.artifact is None:
         return None
-    path = layout.root / str(record.artifact["path"])
+    try:
+        # The same boundary verification uses, so a corrupt record cannot make
+        # the gate read another record's snapshot -- or anything outside the
+        # repository -- on its way to refusing it (VS7).
+        path = resolve_declared_artifact(layout, record.id, str(record.artifact["path"]))
+    except SkillKernelError:
+        return None
     if not path.is_file():
         return None
     try:

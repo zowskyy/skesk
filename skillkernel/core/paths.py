@@ -227,6 +227,14 @@ class Layout:
     def skills_index_file(self) -> Path:
         return self.skills_dir / "registry" / "index.yaml"
 
+    def evidence_artifact_dir(self, record_id: str) -> Path:
+        """The one directory an evidence record's artifact may occupy.
+
+        Derivation lives here with the rest of it, so the writer, the ledger's
+        verification and the promotion gate all mean the same directory.
+        """
+        return self.evidence_artifacts_dir / record_id
+
     def skill_scope_dir(self, scope: str) -> Path:
         if scope not in SKILL_SCOPES:
             raise ValueError(f"unknown skill scope {scope!r}; expected one of {SKILL_SCOPES}")

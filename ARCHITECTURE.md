@@ -94,6 +94,15 @@ versions a revision deliberately retains. Until VS5 the flat glob was applied
 universally, so an orphaned skill or nested experiment definition was invisible
 while a shape neither store writes was the only one reported.
 
+An evidence artifact is owned by the record that declares it (DEC-0020). The
+artifact directory is claimed in the same breath as the identifier, so a write
+never adopts one already on disk and a refusal burns nothing. Every read of a
+stored artifact path goes through one resolver that checks the path *lexically*
+before touching the filesystem, so a corrupt record cannot make the kernel open
+or size anything outside that record's own directory. The namespace is closed:
+a declared artifact means exactly that file and nothing else, and a record
+declaring none means no directory at all.
+
 Detected corruption: orphan records, dangling entries, duplicate identifiers,
 foreign prefixes, a counter that would reuse an identifier, an index declaring
 the wrong kind, and index paths that escape the repository root.
@@ -490,7 +499,7 @@ See DEC-0014 (what is portable), DEC-0015 (installation semantics) and DEC-0016
 
 ## 3. Verification
 
-1025 tests, weighted by risk rather than by count. Negative and adversarial cases
+1072 tests, weighted by risk rather than by count. Negative and adversarial cases
 are the majority.
 
 | Area | Tests |

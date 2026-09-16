@@ -250,6 +250,17 @@ class Registry:
             return self.default_record_path(record_id)
         return self.claim_path(record_id)
 
+    def require_unowned_path(self, relative: str, *, kind: str, record_id: str) -> None:
+        """Refuse one domain-relative destination that already exists."""
+        destination = self.resolve(relative)
+        if destination.exists() or destination.is_symlink():
+            raise UnsafeOperationError(
+                f"{self.domain_dir.name}/{relative} already exists on disk but no "
+                f"{self.kind} record is registered there. Allocating {record_id} would "
+                f"claim an unmanaged {kind} and overwrite whatever it holds. "
+                "Inspect it and remove it deliberately; nothing has been written."
+            )
+
     def require_unowned_destination(self, record_id: str) -> None:
         """Refuse the destination ``record_id`` would claim if something is there.
 
@@ -266,22 +277,18 @@ class Registry:
         relative = self._claimed_destination(record_id)
         if relative is None:
             return
-        destination = self.resolve(relative)
-        if destination.exists() or destination.is_symlink():
-            raise UnsafeOperationError(
-                f"{self.domain_dir.name}/{relative} already exists on disk but no "
-                f"{self.kind} record is registered there. Allocating {record_id} would "
-                f"claim an unmanaged {self.claim_kind} and overwrite whatever it holds. "
-                "Inspect it and remove it deliberately; nothing has been written."
-            )
+        self.require_unowned_path(relative, kind=self.claim_kind, record_id=record_id)
 
-    def allocate_id(self) -> str:
+    def allocate_id(self, *, also_claims: Callable[[str], Iterable[str]] | None = None) -> str:
         """Reserve and persist the next identifier for this domain.
 
         The destination is proved unowned **first**. The identifier is derived
         from ``next_sequence`` before the index is written, so the refusal
         precedes the only mutation here -- which is what makes "before the first
         mutation and before identifier allocation" true rather than aspirational.
+
+        ``also_claims`` extends the same guarantee to a destination the caller
+        derives from the prospective identifier.
 
         An interruption cannot produce the state this refuses: the counter is
         persisted before the record, so an interrupted create orphans a file at
@@ -293,6 +300,12 @@ class Registry:
         index = self.load_index()
         record_id = format_id(self.id_prefix, index.next_sequence)
         self.require_unowned_destination(record_id)
+        # A caller whose write lands somewhere the identifier alone does not
+        # determine -- an evidence artifact directory -- claims it here, in the
+        # same breath, so the refusal still precedes the counter. Checking after
+        # allocation would burn an identifier for a write that cannot happen.
+        for relative in () if also_claims is None else also_claims(record_id):
+            self.require_unowned_path(relative, kind="directory", record_id=record_id)
         index.next_sequence += 1
         self._write_index(index)
         return record_id
