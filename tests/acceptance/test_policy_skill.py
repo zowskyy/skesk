@@ -15,9 +15,10 @@ than as prose: it must fire when an agent is genuinely blocked, and must *not*
 fire during ordinary work that happens to be difficult. Over-activation would
 turn every hard task into an escalation.
 
-It arrives at ``candidate`` and is promoted on evidence produced here, exactly
-like any other skill. DEC-0004 applies to a policy we are confident in just as
-much as to one we are not: confidence is not evidence.
+It arrives at ``observed``, reaches ``candidate`` through the ordinary gate, and
+goes no further than the locally earned evidence carries it — exactly like any
+other skill (DEC-0004 as amended by DEC-0015). That applies to a policy we are
+confident in just as much as to one we are not: confidence is not evidence.
 """
 
 from __future__ import annotations
@@ -205,7 +206,8 @@ def test_the_escalation_policy_passes_the_same_lifecycle(tmp_path: Path, frozen_
         confidence="medium",
     )
 
-    # DEC-0004: a bundled policy enters at candidate, not validated.
+    # DEC-0004 as amended by DEC-0015: a bundled policy enters at observed,
+    # never validated.
     assert policy.maturity == "observed"
     policy = engine.promote(
         policy.id, "candidate", reason="Applicability and exclusions stated.", actor=ACTOR
