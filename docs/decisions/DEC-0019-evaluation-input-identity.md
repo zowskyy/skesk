@@ -1,6 +1,6 @@
 # DEC-0019 — An evaluation identifies the inputs it was run against
 
-**Status:** Accepted, implemented, tested (Vertical Slice 6).
+**Status:** Accepted, implemented, tested (Vertical Slice 6). Amended by DEC-0021: the definition's `schema_version` and `cases` manifest describe the encoding rather than an input, and are excluded from `evaluation_input_digest`. Everything else below stands.
 **Amends:** DEC-0009 (what "distinct corpora" means).
 **Relates to:** DEC-0003, DEC-0006, DEC-0007, DEC-0016.
 

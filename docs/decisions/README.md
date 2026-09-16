@@ -28,5 +28,6 @@ files become the human projection of those records.
 | [DEC-0016](DEC-0016-packaged-resource-integrity.md) | Accepted (coverage wording corrected in VS6) | Packaged resources via `importlib.resources`; the portable content hash |
 | [DEC-0017](DEC-0017-destination-containment.md) | Accepted (extends DEC-0013) | A destination is contained by the root that owns it; components validated before construction |
 | [DEC-0018](DEC-0018-physical-ownership.md) | Accepted (amends DEC-0015) | Physical state does not acquire logical ownership, enforced at the allocation boundary; orphan discovery follows each domain's real topology |
-| [DEC-0019](DEC-0019-evaluation-input-identity.md) | Accepted (amends DEC-0009) | An evaluation identifies the inputs it consumed; distinct corpora are distinct verifiable scoring content, not distinct labels |
+| [DEC-0019](DEC-0019-evaluation-input-identity.md) | Accepted (amends DEC-0009; amended by DEC-0021) | An evaluation identifies the inputs it consumed; distinct corpora are distinct verifiable scoring content, not distinct labels |
 | [DEC-0020](DEC-0020-artifact-ownership.md) | Accepted (extends DEC-0017, DEC-0018) | An evidence artifact is owned by the record that declares it; the artifact namespace is closed |
+| [DEC-0021](DEC-0021-suite-manifest-authority.md) | Accepted (extends DEC-0018, amends DEC-0019) | A suite is exactly the cases its definition names; the atomic definition write is the only visibility commit |

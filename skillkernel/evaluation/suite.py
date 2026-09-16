@@ -9,6 +9,13 @@ An evaluation suite lives inside the skill's own directory:
 Both directions are required. A suite with only positive cases can measure
 whether a skill fires but never whether it fires when it should not, and
 over-activation is the dangerous direction.
+
+The definition *names* its cases. A suite is exactly the files its ``cases``
+manifest lists -- not whatever the examples directories happen to hold -- and
+writing that definition is the only moment a reader's view of the suite changes
+(DEC-0021). Discovering cases by globbing made physical presence confer
+participation, which is the mirror image of the rule DEC-0018 states for
+ownership, and left multi-file replacement with no commit point.
 """
 
 from __future__ import annotations
@@ -20,7 +27,7 @@ from typing import Any
 
 from skillkernel.core.errors import ValidationError
 from skillkernel.core.ids import SKILL
-from skillkernel.core.paths import Layout, validate_case_id
+from skillkernel.core.paths import Layout, is_canonical_case_id, validate_case_id
 from skillkernel.core.schema import (
     EXTENSION_PREFIX,
     Schema,
@@ -37,15 +44,46 @@ from skillkernel.utils.hashing import canonical_json, sha256_bytes
 
 __all__ = [
     "CASE_SCHEMA",
+    "CASE_SCHEMA_VERSION",
+    "DEFINITION_SCHEMA_VERSION",
     "EVAL_DEFINITION_SCHEMA",
     "EvaluationCase",
     "EvaluationSuite",
+    "case_manifest_entry",
     "evaluation_input_digest",
     "load_evaluation_suite",
+    "upgrade_definition_to_manifest",
     "write_evaluation_suite",
 ]
 
-SUITE_SCHEMA_VERSION = 1
+CASE_SCHEMA_VERSION = 1
+"""The case document format. Unchanged by manifest authority.
+
+Versioned separately from the definition because the two documents change for
+different reasons. They shared one constant, so bumping the definition would
+have invalidated every case file ever written -- a coupling with no meaning
+behind it.
+"""
+
+LEGACY_DEFINITION_SCHEMA_VERSION = 1
+"""The definition format that discovered its cases by globbing.
+
+Still read, so an existing workspace keeps working. Never written: the first
+authoring pass over such a suite upgrades it.
+"""
+
+DEFINITION_SCHEMA_VERSION = 2
+"""The definition format that names its cases."""
+
+POLARITIES = ("positive", "negative")
+"""The two example directories, in the order a suite lists them."""
+
+CASE_SUFFIX = ".yaml"
+"""The one extension a case file may have.
+
+A single spelling is what makes ``a-one.yaml`` and ``a-one.yml`` distinguishable
+as *different* files rather than two ways of saying the same case.
+"""
 
 EXPECTATIONS = ("applies", "does_not_apply")
 SCORER_NAME = "activation-boundary"
@@ -53,7 +91,7 @@ SCORER_VERSION = "1"
 
 EVAL_DEFINITION_SCHEMA = Schema(
     name="evaluation-definition",
-    supported_versions=(SUITE_SCHEMA_VERSION,),
+    supported_versions=(LEGACY_DEFINITION_SCHEMA_VERSION, DEFINITION_SCHEMA_VERSION),
     root=object_spec(
         {
             "schema_version": int_spec(required=True),
@@ -78,6 +116,14 @@ EVAL_DEFINITION_SCHEMA = Schema(
                 description="Guardrail: share of negative cases that may wrongly activate.",
             ),
             "description": str_spec(nullable=True),
+            "cases": list_spec(
+                str_spec(min_length=1),
+                description=(
+                    "Every case file this suite comprises, as "
+                    "examples/<polarity>/<case-id>.yaml relative to the skill directory. "
+                    "Required from schema_version 2; absent before it."
+                ),
+            ),
         },
         unknown="allow_extension",
     ),
@@ -85,7 +131,7 @@ EVAL_DEFINITION_SCHEMA = Schema(
 
 CASE_SCHEMA = Schema(
     name="evaluation-case",
-    supported_versions=(SUITE_SCHEMA_VERSION,),
+    supported_versions=(CASE_SCHEMA_VERSION,),
     root=object_spec(
         {
             "schema_version": int_spec(required=True),
@@ -107,8 +153,24 @@ content -- but the bundle hash's *coverage* definition is not: it enumerates
 packaged files, and this enumerates what an evaluation actually consumed.
 """
 
-SUITE_SCORING_FIELDS = ("schema_version", "pass_threshold", "max_false_activation_rate")
+SUITE_SCORING_FIELDS = ("pass_threshold", "max_false_activation_rate")
 """Definition fields the scorer and the verdict actually read."""
+
+DEFINITION_ENCODING_FIELDS = ("schema_version", "cases")
+"""Definition fields that describe the encoding, not the input. Not in identity.
+
+``schema_version`` says how to read the document and ``cases`` says which files
+to read; neither is itself an input. Excluding them is what makes the upgrade
+from a globbing definition to the manifest that names exactly the same files a
+no-op for evidence: same corpus, same digest, same standing.
+
+They are not a hole in coverage, because the thing they determine is covered
+directly. Every consumed file is framed into the digest by its own path, so a
+manifest that named a different set, or a version that made the loader read a
+different set, would move the digest through the *files*. What is deliberately
+not covered is a hypothetical future version that reinterprets a value this one
+already reads -- that would need its own migration, not a silent bump.
+"""
 
 SUITE_PROVENANCE_FIELDS = ("skill", "corpus_id", "scorer", "scorer_version")
 """Definition fields that identify the run rather than decide it.
@@ -233,14 +295,17 @@ def read_evaluation_inputs(layout: Layout, skill_id: str) -> EvaluationInputs:
             f"{layout.relative(path)} declares skill {data['skill']!r} but belongs to {skill_id}"
         )
 
+    source = layout.relative(path)
     cases: list[tuple[str, dict[str, Any]]] = []
-    for polarity in ("positive", "negative"):
-        directory = examples_dir(layout, skill_dir, polarity)
-        if not directory.is_dir():
-            continue
-        for case_file in sorted(directory.glob("*.yaml")):
-            document = dict(CASE_SCHEMA.validate(load_yaml_file(case_file), source=str(case_file)))
-            cases.append((layout.relative(case_file), document))
+    for relative, case_file in _comprised_case_files(layout, skill_dir, data, source=source):
+        if not case_file.is_file():
+            raise ValidationError(
+                f"{source} names {relative}, which is missing or is not a regular file. "
+                "A suite is exactly the cases its definition names, so a case that cannot "
+                "be read is a refusal, not a smaller corpus."
+            )
+        document = dict(CASE_SCHEMA.validate(load_yaml_file(case_file), source=str(case_file)))
+        cases.append((relative, document))
 
     if not cases:
         raise ValidationError(f"{skill_id} has an evaluation definition but no example cases")
@@ -251,6 +316,154 @@ def read_evaluation_inputs(layout: Layout, skill_id: str) -> EvaluationInputs:
         definition=data,
         cases=tuple(cases),
     )
+
+
+def case_manifest_entry(polarity: str, case_id: str) -> str:
+    """How one case file is spelled in a definition's ``cases`` manifest.
+
+    Relative to the *skill* directory rather than the repository root, so that
+    moving a skill between scopes does not rewrite its suite.
+    """
+    return f"examples/{polarity}/{case_id}{CASE_SUFFIX}"
+
+
+def _parse_manifest_entry(entry: object, *, source: str) -> tuple[str, str]:
+    """Split one manifest entry into ``(polarity, stem)``, or refuse it.
+
+    Layer A of DEC-0017, applied to a string before any path is built from it.
+    The grammar admits exactly one shape, so a traversal, an absolute path, a
+    nested directory and a second file extension are all unrepresentable rather
+    than constructed and then caught.
+    """
+    if not isinstance(entry, str):
+        raise ValidationError(f"{source} names a case that is not a string: {entry!r}")
+    parts = entry.split("/")
+    if len(parts) != 3 or parts[0] != "examples" or parts[1] not in POLARITIES:
+        raise ValidationError(
+            f"{source} names {entry!r}, which is not a case path. A case is named "
+            f"examples/<{'|'.join(POLARITIES)}>/<case-id>{CASE_SUFFIX}, relative to the "
+            "skill directory. Nested locations are not part of a suite."
+        )
+    name = parts[2]
+    if not name.endswith(CASE_SUFFIX) or len(name) == len(CASE_SUFFIX):
+        raise ValidationError(f"{source} names {entry!r}; a case file is <case-id>{CASE_SUFFIX}.")
+    return parts[1], validate_case_id(name[: -len(CASE_SUFFIX)])
+
+
+def _manifested_case_files(
+    layout: Layout, skill_dir: Path, entries: Sequence[Any], *, source: str
+) -> list[tuple[str, Path]]:
+    """Resolve a manifest to ``(repository-relative path, absolute path)`` pairs.
+
+    Returned in canonical order -- positive before negative, then by case id --
+    rather than in the order the manifest happens to list them, so the manifest
+    is a *set* and reordering it cannot change a digest or a score.
+    """
+    found: dict[tuple[int, str], tuple[str, Path]] = {}
+    for entry in entries:
+        polarity, stem = _parse_manifest_entry(entry, source=source)
+        # Keyed by the path, not by the ``case_id`` inside the document. The two
+        # are not the same thing on the read side: the polarity directories are
+        # separate namespaces, and a corpus is allowed to hold ``positive/twin``
+        # beside ``negative/twin``.
+        key = (POLARITIES.index(polarity), stem)
+        if key in found:
+            raise ValidationError(
+                f"{source} names {entry!r} more than once. Listing one file twice would "
+                "make it look like two cases without it being one."
+            )
+        directory = examples_dir(layout, skill_dir, polarity)
+        # Layer B. The grammar above already makes an escape unconstructible; the
+        # destination is proved independently so that neither layer is a single
+        # point of failure, and so that a symlink -- which no grammar can see
+        # through -- is caught by containment.
+        path = layout.require_within(directory, directory / f"{stem}{CASE_SUFFIX}")
+        found[key] = (layout.relative(path), path)
+    return [found[key] for key in sorted(found)]
+
+
+def _globbed_case_files(layout: Layout, skill_dir: Path) -> list[tuple[str, Path]]:
+    """What a legacy definition comprises: every direct case file, discovered.
+
+    Kept exactly as it was so an existing workspace reads unchanged, and used
+    once more -- by :func:`upgrade_definition_to_manifest` -- to write down what
+    it found.
+    """
+    found: list[tuple[str, Path]] = []
+    for polarity in POLARITIES:
+        directory = examples_dir(layout, skill_dir, polarity)
+        if not directory.is_dir():
+            continue
+        for case_file in sorted(directory.glob(f"*{CASE_SUFFIX}")):
+            found.append((layout.relative(case_file), case_file))
+    return found
+
+
+def _comprised_case_files(
+    layout: Layout, skill_dir: Path, definition: Mapping[str, Any], *, source: str
+) -> list[tuple[str, Path]]:
+    """The case files this definition comprises, by its own declared version."""
+    version = int(definition["schema_version"])
+    if version < DEFINITION_SCHEMA_VERSION:
+        if "cases" in definition:
+            raise ValidationError(
+                f"{source} declares schema_version {version}, which discovers its cases, "
+                "but carries a 'cases' manifest. Read as declared the manifest would be "
+                "ignored and the suite would be whatever the directories hold -- so the "
+                f"document says two different things. Declare schema_version "
+                f"{DEFINITION_SCHEMA_VERSION} to make the manifest authoritative."
+            )
+        return _globbed_case_files(layout, skill_dir)
+    entries = definition.get("cases")
+    if entries is None:
+        raise ValidationError(
+            f"{source} declares schema_version {version} but has no 'cases' manifest. "
+            "A suite is exactly the cases its definition names, and this one names none."
+        )
+    return _manifested_case_files(layout, skill_dir, entries, source=source)
+
+
+def upgrade_definition_to_manifest(layout: Layout, skill_id: str) -> bool:
+    """Bring a legacy definition under manifest authority. Returns whether it wrote.
+
+    The manifest names exactly the direct case files the legacy loader sees
+    right now, so the upgraded suite comprises the same files, loads the same
+    cases and has the same identity: no corpus moves, no digest moves, and no
+    evidence stops being current (DEC-0021).
+
+    It is one atomic write of one file. Interrupted, the definition is still the
+    legacy one and the suite still reads.
+
+    This runs *first* in any authoring pass, because every window that follows
+    depends on the definition naming the old set while the new one is written. A
+    legacy definition names nothing, so it would adopt the new files as they
+    landed -- which is the defect, not a step towards fixing it.
+    """
+    skill_dir = _skill_dir(layout, skill_id)
+    path = definition_path(layout, skill_dir)
+    if not path.is_file():
+        return False
+    data = dict(EVAL_DEFINITION_SCHEMA.validate(load_yaml_file(path), source=str(path)))
+    if int(data["schema_version"]) >= DEFINITION_SCHEMA_VERSION:
+        return False
+
+    manifest: list[str] = []
+    for relative, case_file in _globbed_case_files(layout, skill_dir):
+        stem = case_file.name[: -len(CASE_SUFFIX)]
+        if not is_canonical_case_id(stem):
+            raise ValidationError(
+                f"{relative} is loaded by this skill's legacy evaluation suite, but its "
+                f"name cannot be written as a manifest entry: {stem!r} is not a canonical "
+                "evaluation case id. Rename or remove it first -- dropping it here would "
+                "silently change what the suite measures."
+            )
+        polarity = case_file.parent.name
+        manifest.append(case_manifest_entry(polarity, stem))
+
+    upgraded = {**data, "schema_version": DEFINITION_SCHEMA_VERSION, "cases": manifest}
+    EVAL_DEFINITION_SCHEMA.validate(upgraded, source=str(path))
+    write_yaml_file(path, upgraded, header=_DEFINITION_HEADER)
+    return True
 
 
 def _frame(path: str, payload: bytes) -> bytes:
@@ -344,6 +557,24 @@ def write_evaluation_suite(
 
     Both polarities are required: a suite that cannot detect over-activation is
     not an evaluation of an activation boundary.
+
+    Replacement is committed, in four steps (DEC-0021):
+
+    0. validate everything, writing nothing, so a malformed case refuses before
+       a single byte of the repository has changed;
+    1. upgrade a legacy definition in place, naming exactly what it already
+       comprises -- one atomic write that changes nothing observable;
+    2. write every case of the new corpus while the definition still names the
+       old one, so a reader still sees the old suite, whole;
+    3. write the definition naming the new corpus. **This is the commit.**
+       Before it a reader sees exactly the old suite; after it, exactly the new
+       one. There is no instant at which a reader sees both, or sees the new
+       cases under the old corpus's metadata;
+    4. retire the case files the new definition no longer names. Housekeeping:
+       an unnamed file is already outside the suite, so an interruption here
+       leaves the answer unchanged and ``doctor`` reports the leftovers.
+
+    Re-running after an interruption at any step converges on the same result.
     """
     if not positive:
         raise ValidationError("an evaluation suite needs at least one positive case")
@@ -354,26 +585,14 @@ def write_evaluation_suite(
         )
 
     skill_dir = _skill_dir(layout, skill_id)
-    definition = {
-        "schema_version": SUITE_SCHEMA_VERSION,
-        "skill": skill_id,
-        "corpus_id": corpus_id,
-        "scorer": SCORER_NAME,
-        "scorer_version": SCORER_VERSION,
-        "pass_threshold": float(pass_threshold),
-        "max_false_activation_rate": float(max_false_activation_rate),
-        "description": description,
-    }
-    EVAL_DEFINITION_SCHEMA.validate(definition, source=f"{skill_id} evaluation definition")
 
+    # Step 0. Plan the whole corpus before touching the repository.
     seen: set[str] = set()
-    written: dict[str, set[Path]] = {}
+    planned: list[tuple[str, str, dict[str, Any]]] = []
     for polarity, entries, expected in (
         ("positive", positive, "applies"),
         ("negative", negative, "does_not_apply"),
     ):
-        directory = examples_dir(layout, skill_dir, polarity)
-        directory.mkdir(parents=True, exist_ok=True)
         for entry in entries:
             # Layer A, at the reusable boundary. This writer is public, so it
             # must not depend on the bundle installer having checked first.
@@ -382,23 +601,50 @@ def write_evaluation_suite(
                 raise ValidationError(f"duplicate case_id {case_id!r} in the evaluation suite")
             seen.add(case_id)
             document = {
-                "schema_version": SUITE_SCHEMA_VERSION,
+                "schema_version": CASE_SCHEMA_VERSION,
                 "case_id": case_id,
                 "expected": expected,
                 "signals": list(entry["signals"]),
                 "description": entry.get("description"),
             }
             EvaluationCase.from_document(document, source=case_id)
-            # Layer B. The grammar above already makes an escape unconstructible,
-            # but the destination is guarded on its own so that neither layer is
-            # a single point of failure. Guarding the parent is what proved
-            # insufficient: containment has to be asserted of the final path.
-            destination = layout.require_within(directory, directory / f"{case_id}.yaml")
-            write_yaml_file(destination, document, header=_CASE_HEADER)
-            written.setdefault(polarity, set()).add(destination.resolve())
+            planned.append((polarity, case_id, document))
 
-    _retire_replaced_cases(layout, skill_dir, written)
+    definition = {
+        "schema_version": DEFINITION_SCHEMA_VERSION,
+        "skill": skill_id,
+        "corpus_id": corpus_id,
+        "scorer": SCORER_NAME,
+        "scorer_version": SCORER_VERSION,
+        "pass_threshold": float(pass_threshold),
+        "max_false_activation_rate": float(max_false_activation_rate),
+        "description": description,
+        "cases": [case_manifest_entry(polarity, case_id) for polarity, case_id, _ in planned],
+    }
+    EVAL_DEFINITION_SCHEMA.validate(definition, source=f"{skill_id} evaluation definition")
+
+    # Step 1. A legacy definition names nothing, so it has to stop globbing
+    # before the new cases appear beside the old ones.
+    upgrade_definition_to_manifest(layout, skill_id)
+
+    # Step 2. The new corpus lands while the definition still names the old one.
+    written: dict[str, set[Path]] = {}
+    for polarity, case_id, document in planned:
+        directory = examples_dir(layout, skill_dir, polarity)
+        directory.mkdir(parents=True, exist_ok=True)
+        # Layer B. The grammar above already makes an escape unconstructible,
+        # but the destination is guarded on its own so that neither layer is
+        # a single point of failure. Guarding the parent is what proved
+        # insufficient: containment has to be asserted of the final path.
+        destination = layout.require_within(directory, directory / f"{case_id}{CASE_SUFFIX}")
+        write_yaml_file(destination, document, header=_CASE_HEADER)
+        written.setdefault(polarity, set()).add(destination.resolve())
+
+    # Step 3. The commit.
     write_yaml_file(definition_path(layout, skill_dir), definition, header=_DEFINITION_HEADER)
+
+    # Step 4. Housekeeping, after the answer has already changed.
+    _retire_replaced_cases(layout, skill_dir, written)
     return load_evaluation_suite(layout, skill_id)
 
 
@@ -414,8 +660,13 @@ def _retire_replaced_cases(
     Deliberately narrow. Only direct ``*.yaml`` files in the two managed
     polarity directories are considered, never recursively: nested directories,
     non-YAML files and every other deferred question on disk are left exactly as
-    they are. New files are written first, so an interruption leaves the old
-    merge behaviour rather than a suite with cases missing.
+    they are.
+
+    Runs after the commit, and is not part of it. By the time it runs the
+    definition already names the new corpus, so these files are outside the
+    suite whether or not they are still on disk; removing them tidies the
+    directory rather than changing any answer. Interrupted, ``doctor`` reports
+    what is left as unnamed case-shaped content and re-running finishes the job.
 
     Each removal is proved to be inside the directory that owns it (DEC-0017)
     before it happens; this is the only deletion the kernel performs.
@@ -425,7 +676,7 @@ def _retire_replaced_cases(
         if not directory.is_dir():
             continue
         keep = written.get(polarity, set())
-        for existing in sorted(directory.glob("*.yaml")):
+        for existing in sorted(directory.glob(f"*{CASE_SUFFIX}")):
             if not existing.is_file() or existing.resolve() in keep:
                 continue
             layout.require_within(directory, existing).unlink()

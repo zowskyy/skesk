@@ -101,6 +101,36 @@ def edit(path: Path, **changes: Any) -> None:
     path.write_text(yaml.safe_dump(document), encoding="utf-8")
 
 
+def manifest_of(layout: Layout, slug: str = "subject") -> list[str]:
+    document = yaml.safe_load(definition_file(layout, slug).read_text(encoding="utf-8"))
+    return list(document["cases"])
+
+
+def set_manifest(layout: Layout, entries: list[str], slug: str = "subject") -> None:
+    """Rewrite what the definition names, as an authoring pass would.
+
+    From VS8 a suite comprises exactly the cases its definition names, so a test
+    that means "the corpus changed" has to change the manifest. Editing files
+    beside an unchanged manifest means something different -- and is asserted
+    separately, in ``test_suite_manifest``.
+    """
+    edit(definition_file(layout, slug), cases=entries)
+
+
+def entry_for(polarity: str, case_id: str) -> str:
+    return f"examples/{polarity}/{case_id}.yaml"
+
+
+def retire_case(layout: Layout, polarity: str, case_id: str, slug: str = "subject") -> None:
+    """Take one case out of the corpus: the file and the name for it."""
+    case_file(layout, polarity, case_id, slug).unlink()
+    set_manifest(
+        layout,
+        [e for e in manifest_of(layout, slug) if e != entry_for(polarity, case_id)],
+        slug,
+    )
+
+
 def prepared(layout: Layout) -> str:
     """A skill with an authored suite, ready to evaluate."""
     record = make_subject(layout)
@@ -156,6 +186,7 @@ def test_description_edits_do_not_change_the_digest(layout: Layout, where: str) 
 
 
 def add_case(layout: Layout) -> None:
+    """Add a case to the corpus: write it, and name it."""
     case_file(layout, "positive", "p-three").write_text(
         yaml.safe_dump(
             {
@@ -168,14 +199,25 @@ def add_case(layout: Layout) -> None:
         ),
         encoding="utf-8",
     )
+    set_manifest(layout, [*manifest_of(layout), entry_for("positive", "p-three")])
+
+
+def rename_case(layout: Layout) -> None:
+    """Move a case to a different path, keeping its content and its membership."""
+    case_file(layout, "positive", "p-one").rename(case_file(layout, "positive", "zz-renamed"))
+    set_manifest(
+        layout,
+        [
+            entry_for("positive", "zz-renamed") if e == entry_for("positive", "p-one") else e
+            for e in manifest_of(layout)
+        ],
+    )
 
 
 MUTATIONS = {
     "case added": add_case,
-    "case removed": lambda lo: case_file(lo, "positive", "p-two").unlink(),
-    "case file renamed": lambda lo: case_file(lo, "positive", "p-one").rename(
-        case_file(lo, "positive", "zz-renamed")
-    ),
+    "case removed": lambda lo: retire_case(lo, "positive", "p-two"),
+    "case file renamed": rename_case,
     "case_id changed": lambda lo: edit(case_file(lo, "positive", "p-one"), case_id="p-other"),
     "expected flipped": lambda lo: edit(
         case_file(lo, "positive", "p-one"), expected="does_not_apply"
@@ -255,7 +297,7 @@ def test_a_mutated_corpus_stops_counting_as_current(layout: Layout) -> None:
     """The demonstrated exploit: delete the guardrail corpus, keep the evidence."""
     skill_id = prepared(layout)
     evaluate_skill(layout, skill_id, project=PROJECT)
-    case_file(layout, "negative", "n-one").unlink()
+    retire_case(layout, "negative", "n-one")
     add_case(layout)
 
     skill = SkillStore(layout).get(skill_id)
@@ -345,7 +387,7 @@ def findings_for(layout: Layout, prefix: str = "evaluation-input") -> list[tuple
 def test_a_mismatch_is_reported(layout: Layout) -> None:
     skill_id = prepared(layout)
     evaluate_skill(layout, skill_id, project=PROJECT)
-    case_file(layout, "negative", "n-one").unlink()
+    retire_case(layout, "negative", "n-one")
     assert findings_for(layout) == [(WARNING, "evaluation-input:mismatch", skill_id)]
 
 
@@ -365,7 +407,7 @@ def test_a_current_evaluation_supersedes_a_stale_one(layout: Layout) -> None:
     """History is not a defect. Re-evaluation restores a clean report."""
     skill_id = prepared(layout)
     first = evaluate_skill(layout, skill_id, project=PROJECT)
-    case_file(layout, "negative", "n-one").unlink()
+    retire_case(layout, "negative", "n-one")
     assert findings_for(layout) != []
 
     second = evaluate_skill(layout, skill_id, project=PROJECT)
@@ -391,7 +433,7 @@ def test_severity_rises_when_maturity_rests_on_the_evidence(layout: Layout) -> N
         )
         previous = state
 
-    case_file(layout, "negative", "n-one").unlink()
+    retire_case(layout, "negative", "n-one")
     assert findings_for(layout) == [(ERROR, "evaluation-input:mismatch", skill_id)]
 
 
@@ -403,8 +445,8 @@ def test_one_skills_stale_corpus_does_not_hide_anothers(layout: Layout) -> None:
     author(layout, second)
     evaluate_skill(layout, second, project=PROJECT)
 
-    case_file(layout, "negative", "n-one").unlink()
-    case_file(layout, "negative", "n-one", slug="other").unlink()
+    retire_case(layout, "negative", "n-one")
+    retire_case(layout, "negative", "n-one", slug="other")
     assert findings_for(layout) == [
         (WARNING, "evaluation-input:mismatch", first),
         (WARNING, "evaluation-input:mismatch", second),
@@ -431,7 +473,7 @@ def test_reevaluation_never_rewrites_earlier_evidence(layout: Layout) -> None:
     record_before = EvidenceLedger(layout).registry.path_of(first.evidence_id).read_bytes()
     artifact_before = digest_of(artifact_of(layout, first.evidence_id))
 
-    case_file(layout, "negative", "n-one").unlink()
+    retire_case(layout, "negative", "n-one")
     evaluate_skill(layout, skill_id, project=PROJECT)
 
     assert EvidenceLedger(layout).registry.path_of(first.evidence_id).read_bytes() == record_before

@@ -39,6 +39,7 @@ from skillkernel.core.errors import SkillKernelError
 from skillkernel.core.paths import Layout
 from skillkernel.discovery.observations import ObservationStore
 from skillkernel.evaluation.runner import INPUT_DIGEST_ATTRIBUTE
+from skillkernel.evaluation.suite import read_evaluation_inputs
 from skillkernel.evidence.ledger import EvidenceLedger
 from skillkernel.experiments.store import ExperimentStore
 from skillkernel.knowledge.store import KnowledgeStore
@@ -245,6 +246,7 @@ def run_doctor(layout: Layout) -> DoctorReport:
     check("skill-location")(lambda: _check_skill_locations(report, layout))
     check("skill-source")(lambda: _check_skill_sources(report, layout))
     check("evaluation-input")(lambda: _check_evaluation_inputs(report, layout))
+    check("evaluation-cases")(lambda: _check_evaluation_cases(report, layout))
 
     return report
 
@@ -486,6 +488,71 @@ def _check_one_evaluation_input(
     # this evidence, while a younger skill is merely being told to re-run first.
     severity = ERROR if skill.maturity in EVIDENCE_BACKED_MATURITIES else WARNING
     report.add(severity, code, skill_id, message)
+
+
+CASE_SHAPED_SUFFIXES = (".yaml", ".yml")
+"""What counts as case-shaped content inside a skill's ``examples/`` tree.
+
+``.yml`` is included precisely because it is *not* a case file: a suite names
+``.yaml`` and nothing else, so a case saved under the other spelling is silently
+never scored. That near-miss is the reason to look at all. Everything else --
+notes, drafts, diagrams, subdirectories -- is authoring material and is left
+alone. ``doctor`` is not a filesystem linter.
+"""
+
+
+def _check_evaluation_cases(report: DoctorReport, layout: Layout) -> None:
+    """Report case-shaped content that no evaluation definition names.
+
+    Under manifest authority an unnamed file is simply not read, so it cannot
+    corrupt an evaluation, change a digest or affect a promotion. That is why
+    this is a ``WARNING`` at every maturity and never an ``ERROR``: the finding
+    is about a person's expectation, not the repository's integrity. A case
+    someone believes is being scored, and is not, is a silent gap in coverage --
+    and after an interrupted authoring pass, the retired-but-still-present files
+    are exactly what this surfaces.
+    """
+    store = SkillStore(layout)
+    for skill_id in sorted(store.ids()):
+        _guarded_skill(report, "evaluation-cases", skill_id)(
+            partial(_check_one_skill_cases, report, store, layout, skill_id)
+        )
+
+
+def _check_one_skill_cases(
+    report: DoctorReport, store: SkillStore, layout: Layout, skill_id: str
+) -> None:
+    try:
+        inputs = read_evaluation_inputs(layout, skill_id)
+    except SkillKernelError:
+        # No readable definition means no manifest, and so no answer to "which
+        # files belong here". ``evaluation-input`` owns readability; reporting
+        # every file as unnamed on the strength of a broken definition would be
+        # guessing, and would bury the real finding under the guesses.
+        return
+
+    examples = layout.require_inside(store.skill_dir(skill_id) / "examples")
+    if not examples.is_dir():
+        return
+    comprised = {relative for relative, _document in inputs.cases}
+    root = layout.root.resolve()
+    for entry in sorted(examples.rglob("*")):
+        if not entry.name.endswith(CASE_SHAPED_SUFFIXES):
+            continue
+        # The entry's own name, not whatever it points at. Resolving the leaf
+        # would make a symlink indistinguishable from the case it aliases, and
+        # an alias is a second entry that the definition does not name.
+        relative = (entry.parent.resolve() / entry.name).relative_to(root).as_posix()
+        if relative in comprised:
+            continue
+        report.add(
+            WARNING,
+            "evaluation-cases:unmanifested",
+            relative,
+            f"looks like an evaluation case, but {skill_id}'s evaluation definition does "
+            "not name it, so it is never loaded and never scored. Author it into the "
+            "suite if it should count, or remove it.",
+        )
 
 
 def _check_skill_sources(report: DoctorReport, layout: Layout) -> None:

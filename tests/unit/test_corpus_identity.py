@@ -101,6 +101,30 @@ def case_ids_on_disk(layout: Layout) -> list[str]:
     return sorted(path.stem for path in examples(layout).rglob("*.yaml"))
 
 
+def definition_file(layout: Layout, slug: str = "subject") -> Path:
+    return layout.skills_dir / "core" / slug / "scorer" / "eval.yaml"
+
+
+def set_manifest(layout: Layout, entries: list[str], slug: str = "subject") -> None:
+    """Rewrite what the definition names (VS8: a suite is what it names)."""
+    path = definition_file(layout, slug)
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    document["cases"] = entries
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+
+def manifest_of(layout: Layout, slug: str = "subject") -> list[str]:
+    return list(yaml.safe_load(definition_file(layout, slug).read_text(encoding="utf-8"))["cases"])
+
+
+def plant_case(layout: Layout, polarity: str, name: str, document: dict[str, Any]) -> None:
+    """Write a case file and name it, without going through the suite writer."""
+    (examples(layout) / polarity / f"{name}.yaml").write_text(
+        yaml.safe_dump(document), encoding="utf-8"
+    )
+    set_manifest(layout, [*manifest_of(layout), f"examples/{polarity}/{name}.yaml"])
+
+
 def artifact_of(layout: Layout, evidence_id: str) -> Path:
     record = EvidenceLedger(layout).get(evidence_id)
     assert record.artifact is not None
@@ -208,6 +232,13 @@ def test_renaming_a_case_file_is_not_a_new_corpus(layout: Layout) -> None:
 
     source = examples(layout) / "negative" / "a-neg.yaml"
     source.rename(examples(layout) / "negative" / "zz-refiled.yaml")
+    set_manifest(
+        layout,
+        [
+            "examples/negative/zz-refiled.yaml" if e == "examples/negative/a-neg.yaml" else e
+            for e in manifest_of(layout)
+        ],
+    )
 
     assert corpus_content_digest(read_evaluation_inputs(layout, skill_id)) == before
     assert evaluation_input_digest(layout, skill_id) is not None
@@ -360,14 +391,14 @@ def test_live_identity_is_keyed_by_path_not_basename(layout: Layout) -> None:
         "signals": ["beta"],
         "description": None,
     }
-    (examples(layout) / "negative" / "twin.yaml").write_text(yaml.safe_dump(twin), encoding="utf-8")
+    plant_case(layout, "negative", "twin", twin)
     one_side = evaluation_input_digest(layout, skill_id)
 
-    (examples(layout) / "positive" / "twin.yaml").write_text(
-        yaml.safe_dump(
-            {**twin, "case_id": "twin-positive", "expected": "applies", "signals": ["alpha"]}
-        ),
-        encoding="utf-8",
+    plant_case(
+        layout,
+        "positive",
+        "twin",
+        {**twin, "case_id": "twin-positive", "expected": "applies", "signals": ["alpha"]},
     )
     both_sides = evaluation_input_digest(layout, skill_id)
     assert both_sides != one_side, "a same-named file in the other polarity was invisible"
