@@ -138,9 +138,18 @@ class Registry:
         return self.domain_dir / self.records_subdir
 
     def resolve(self, relative_path: str) -> Path:
-        """Resolve an index-relative path, refusing anything outside the repo."""
+        """Resolve an index-relative path, refusing anything outside this domain.
+
+        The boundary is the domain directory, not the repository. Asking only
+        whether the result was in the workspace let an index entry such as
+        ``../skills/core/x.yaml`` redirect one domain's write into another
+        domain's tree -- inside the workspace, and nowhere near where it belongs.
+
+        ``require_within`` still checks repository containment first (DEC-0017),
+        so this narrows the boundary without relaxing it.
+        """
         candidate = self.domain_dir / relative_path
-        return self.layout.require_inside(candidate)
+        return self.layout.require_within(self.domain_dir, candidate)
 
     def relativize(self, path: Path) -> str:
         return Path(path).resolve().relative_to(self.domain_dir.resolve()).as_posix()

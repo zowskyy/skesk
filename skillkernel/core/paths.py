@@ -11,11 +11,16 @@ directory an initialized SkillKernel repository.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from skillkernel.core.errors import NotInitializedError, UnsafeOperationError
+from skillkernel.core.errors import (
+    NotInitializedError,
+    UnsafeOperationError,
+    ValidationError,
+)
 
 __all__ = ["CONFIG_FILENAME", "Layout", "find_root", "load_layout"]
 
@@ -31,6 +36,105 @@ location-bearing fact has exactly one definition.
 
 SKILL_FILENAME = "skill.yaml"
 """The record file inside every skill directory."""
+
+SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+"""The grammar of a canonical skill slug.
+
+This is not a new restriction. It is exactly what
+:func:`skillkernel.utils.text.slugify` already produces -- lowercase ASCII
+alphanumerics separated by single hyphens, with no leading or trailing hyphen --
+and every slug in this repository already satisfies it.
+
+The point is structural: a string matching this pattern cannot contain a path
+separator, cannot be ``.`` or ``..``, and therefore cannot represent more than
+one path component or escape its scope directory. Rejecting a malformed
+component is stronger than joining arbitrary input and checking containment
+afterwards, because the dangerous path is never constructed at all.
+"""
+
+
+MAX_COMPONENT_LENGTH = 128
+"""Longest permitted path component.
+
+Shape alone does not make a component usable. Every mainstream filesystem caps a
+single name at 255 bytes, and the kernel appends a suffix such as ``.yaml``, so
+an unbounded identifier that satisfies the grammar can still fail at the write
+with a bare ``OSError`` -- *after* earlier writes have landed, which is exactly
+the partial state the installer promises never to leave.
+
+128 is conservative: it is comfortably under the limit on every filesystem this
+runs on, and roughly four times the longest identifier this repository has ever
+used (``blocked-but-first-attempt-underway``, 34 characters). The bound exists to
+keep a refusal a refusal; it is not a style rule.
+"""
+
+
+def is_canonical_component(value: object) -> bool:
+    """True when ``value`` is a well-formed, writable single path component."""
+    return (
+        isinstance(value, str)
+        and len(value) <= MAX_COMPONENT_LENGTH
+        and SLUG_PATTERN.match(value) is not None
+    )
+
+
+def validate_component(value: object, *, kind: str, boundary: str) -> str:
+    """Return ``value`` if it is a canonical path component, else raise.
+
+    One grammar, one bound, one message, for every identifier that becomes a
+    directory or file name. ``kind`` and ``boundary`` only name the caller's
+    concern in the diagnostic; the rule itself is identical, because the danger
+    is identical.
+    """
+    if is_canonical_component(value):
+        assert isinstance(value, str)
+        return value
+    if isinstance(value, str) and len(value) > MAX_COMPONENT_LENGTH:
+        raise ValidationError(
+            f"{kind} is {len(value)} characters, over the {MAX_COMPONENT_LENGTH}-character "
+            f"limit for a single path component. Left unchecked it would fail at the "
+            f"filesystem after earlier writes had already landed, turning a refusal into "
+            f"partial state."
+        )
+    raise ValidationError(
+        f"{value!r} is not a canonical {kind}. It must match "
+        f"{SLUG_PATTERN.pattern} -- lowercase a-z0-9 separated by single hyphens, "
+        f"with no leading or trailing hyphen. This keeps it to exactly one path "
+        f"component, so it cannot escape its {boundary}."
+    )
+
+
+def is_canonical_slug(value: object) -> bool:
+    """True when ``value`` is a well-formed skill slug."""
+    return is_canonical_component(value)
+
+
+def validate_slug(value: object) -> str:
+    """Return ``value`` if it is a canonical slug, else raise.
+
+    Called by the canonical path computation, so every caller inherits it.
+    """
+    return validate_component(value, kind="skill slug", boundary="scope directory")
+
+
+def is_canonical_case_id(value: object) -> bool:
+    """True when ``value`` is a well-formed evaluation case id."""
+    return is_canonical_component(value)
+
+
+def validate_case_id(value: object) -> str:
+    """Return ``value`` if it is a canonical evaluation case id, else raise.
+
+    A case id becomes a filename inside a skill's examples directory. It is
+    validated by the same authority as a slug because it carries the same
+    hazard -- and because every case id this repository has ever written already
+    satisfies the grammar, so nothing legitimate is narrowed.
+
+    Enforced on the *write* path only. ``load_evaluation_suite`` discovers cases
+    by globbing the examples directory and never joins a case id onto a path, so
+    a workspace holding a legacy non-canonical id still reads.
+    """
+    return validate_component(value, kind="evaluation case id", boundary="examples directory")
 
 
 @dataclass(frozen=True)
@@ -113,9 +217,7 @@ class Layout:
 
     def skill_path(self, scope: str, slug: str) -> Path:
         """The canonical absolute location of a skill's record file."""
-        if not slug:
-            raise ValueError("a skill slug must not be empty")
-        return self.skill_scope_dir(scope) / slug / SKILL_FILENAME
+        return self.skill_scope_dir(scope) / validate_slug(slug) / SKILL_FILENAME
 
     def relative_skill_path(self, scope: str, slug: str) -> str:
         """The canonical location, relative to the skills directory.
@@ -124,7 +226,7 @@ class Layout:
         comparable with a registered path.
         """
         self.skill_scope_dir(scope)  # validates the scope
-        return f"{scope}/{slug}/{SKILL_FILENAME}"
+        return f"{scope}/{validate_slug(slug)}/{SKILL_FILENAME}"
 
     def parse_relative_skill_path(self, relative: str) -> tuple[str, str] | None:
         """Recover ``(scope, slug)`` from a registered path, or None if it is not canonical.
@@ -134,6 +236,8 @@ class Layout:
         """
         parts = Path(relative).as_posix().split("/")
         if len(parts) != 3 or parts[2] != SKILL_FILENAME or parts[0] not in SKILL_SCOPES:
+            return None
+        if not is_canonical_slug(parts[1]):
             return None
         return parts[0], parts[1]
 
@@ -193,6 +297,31 @@ class Layout:
         root = self.root.resolve()
         if resolved != root and root not in resolved.parents:
             raise UnsafeOperationError(f"{path} is outside the SkillKernel repository at {root}")
+        return resolved
+
+    def require_within(self, directory: Path, path: Path) -> Path:
+        """Reject any path that escapes ``directory``, which must itself be managed.
+
+        :meth:`require_inside` answers "is this in the workspace?". That is not
+        the same question as "is this in the directory that owns it", and the
+        difference is not academic: a file written to the workspace root instead
+        of a skill's examples directory is still inside the workspace.
+
+        This composes with :meth:`require_inside` rather than competing with it
+        -- the owning directory is checked first -- so there is still exactly one
+        implementation of "inside the repository".
+
+        Guard the *final* destination with this, not the parent. A parent that
+        passes containment tells you nothing about a child appended afterwards,
+        which is precisely how an unvalidated component once escaped.
+        """
+        base = self.require_inside(directory)
+        # Repository containment first, so the outermost violated boundary is the
+        # one reported. A path reaching for /etc/passwd should be described that
+        # way, not as merely leaving some inner directory.
+        resolved = self.require_inside(path)
+        if resolved != base and base not in resolved.parents:
+            raise UnsafeOperationError(f"{path} is outside {self.relative(base)}")
         return resolved
 
 

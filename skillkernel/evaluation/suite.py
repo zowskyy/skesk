@@ -20,7 +20,7 @@ from typing import Any
 
 from skillkernel.core.errors import ValidationError
 from skillkernel.core.ids import SKILL
-from skillkernel.core.paths import Layout
+from skillkernel.core.paths import Layout, validate_case_id
 from skillkernel.core.schema import (
     Schema,
     enum_spec,
@@ -203,7 +203,9 @@ def write_evaluation_suite(
         directory = examples_dir(layout, skill_dir, polarity)
         directory.mkdir(parents=True, exist_ok=True)
         for entry in entries:
-            case_id = str(entry["case_id"])
+            # Layer A, at the reusable boundary. This writer is public, so it
+            # must not depend on the bundle installer having checked first.
+            case_id = validate_case_id(str(entry["case_id"]))
             if case_id in seen:
                 raise ValidationError(f"duplicate case_id {case_id!r} in the evaluation suite")
             seen.add(case_id)
@@ -215,7 +217,12 @@ def write_evaluation_suite(
                 "description": entry.get("description"),
             }
             EvaluationCase.from_document(document, source=case_id)
-            write_yaml_file(directory / f"{case_id}.yaml", document, header=_CASE_HEADER)
+            # Layer B. The grammar above already makes an escape unconstructible,
+            # but the destination is guarded on its own so that neither layer is
+            # a single point of failure. Guarding the parent is what proved
+            # insufficient: containment has to be asserted of the final path.
+            destination = layout.require_within(directory, directory / f"{case_id}.yaml")
+            write_yaml_file(destination, document, header=_CASE_HEADER)
 
     write_yaml_file(definition_path(layout, skill_dir), definition, header=_DEFINITION_HEADER)
     return load_evaluation_suite(layout, skill_id)

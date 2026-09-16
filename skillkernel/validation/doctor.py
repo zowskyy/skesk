@@ -33,6 +33,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from skillkernel.bundles.model import SOURCE_FIELD, validate_x_source
 from skillkernel.core.config import load_config
 from skillkernel.core.errors import SkillKernelError
 from skillkernel.core.paths import Layout
@@ -236,6 +237,7 @@ def run_doctor(layout: Layout) -> DoctorReport:
     check("knowledge-lineage")(lambda: _check_knowledge(report, layout))
     check("skills")(lambda: _check_skills(report, layout))
     check("skill-location")(lambda: _check_skill_locations(report, layout))
+    check("skill-source")(lambda: _check_skill_sources(report, layout))
 
     return report
 
@@ -299,13 +301,48 @@ def _check_knowledge(report: DoctorReport, layout: Layout) -> None:
 
 def _check_skills(report: DoctorReport, layout: Layout) -> None:
     store = SkillStore(layout)
-    for skill_id in store.ids():
-        skill = store.get(skill_id)
-        history = store.history(skill_id)
-        for issue in history_issues(history, skill_id=skill_id, current_maturity=skill.maturity):
-            report.add(ERROR, "skill-history", skill_id, issue)
-        for issue in verify_provenance(layout, skill_id).findings:
-            report.add(ERROR, "skill-provenance", skill_id, issue)
+    for skill_id in sorted(store.ids()):
+        _guarded_skill(report, "skill-history", skill_id)(
+            partial(_check_one_skill, report, store, layout, skill_id)
+        )
+
+
+def _check_one_skill(
+    report: DoctorReport, store: SkillStore, layout: Layout, skill_id: str
+) -> None:
+    skill = store.get(skill_id)
+    history = store.history(skill_id)
+    for issue in history_issues(history, skill_id=skill_id, current_maturity=skill.maturity):
+        report.add(ERROR, "skill-history", skill_id, issue)
+    for issue in verify_provenance(layout, skill_id).findings:
+        report.add(ERROR, "skill-provenance", skill_id, issue)
+
+
+def _guarded_skill(
+    report: DoctorReport, code: str, skill_id: str
+) -> Callable[[Callable[[], None]], None]:
+    """Isolate the inspection of one persisted skill.
+
+    ``_guard`` already separates *the kernel found a problem* from *the kernel
+    broke while looking*, but it wraps a whole check. That granularity was too
+    coarse: one damaged record raised out of the loop, so every later skill went
+    uninspected and the finding arrived attributed to the check rather than to
+    the skill. Both skill loops promised per-skill isolation in their comments
+    and neither delivered it.
+
+    The boundary here is exactly one skill. A domain error becomes that skill's
+    own finding and iteration continues; anything else is still re-raised, so
+    ``_guard`` can record it as an internal error and mark the report incomplete.
+    Narrowing over-broad abortion must not erase that distinction (DEC-0010).
+    """
+
+    def run(body: Callable[[], None]) -> None:
+        try:
+            body()
+        except SkillKernelError as exc:
+            report.add(ERROR, code, skill_id, str(exc))
+
+    return run
 
 
 def _check_skill_locations(report: DoctorReport, layout: Layout) -> None:
@@ -338,6 +375,24 @@ def _check_skill_locations(report: DoctorReport, layout: Layout) -> None:
                 "history have almost certainly been overwritten.",
             )
 
+    # A registered path that is not structurally canonical is corruption the
+    # index alone proves. It is checked before any record is read, because such
+    # a path usually makes its own record unreadable -- and a load-first
+    # ordering would skip exactly the entries that are worst. Nothing outside
+    # the managed tree is scanned, and nothing is repaired.
+    for skill_id in sorted(index.entries):
+        entry = index.entries[skill_id]
+        if layout.parse_relative_skill_path(entry.path) is None:
+            report.add(
+                ERROR,
+                "skill-location",
+                skill_id,
+                f"is registered at {entry.path}, which is not a canonical skill "
+                "location. A canonical location is <scope>/<slug>/skill.yaml with a "
+                "well-formed slug; this entry could place the record outside the "
+                "skills tree.",
+            )
+
     # Per-skill checks are isolated: an unreadable record is already reported by
     # the registry check, and must not abort the remaining skills.
     for skill_id in sorted(index.entries):
@@ -346,7 +401,16 @@ def _check_skill_locations(report: DoctorReport, layout: Layout) -> None:
             skill = store.get(skill_id)
         except SkillKernelError:
             continue
-        canonical = layout.relative_skill_path(skill.scope, skill.slug)
+        # Inside the per-skill boundary on purpose. A record can load cleanly and
+        # still declare a slug that is not a canonical component -- legacy state,
+        # or a hand edit -- and computing its canonical path raises. Left outside,
+        # that raise aborted the loop and silently took every later skill's
+        # finding with it.
+        try:
+            canonical = layout.relative_skill_path(skill.scope, skill.slug)
+        except SkillKernelError as exc:
+            report.add(ERROR, "skill-location", skill_id, str(exc))
+            continue
         if entry.path != canonical:
             report.add(
                 ERROR,
@@ -357,3 +421,32 @@ def _check_skill_locations(report: DoctorReport, layout: Layout) -> None:
                 "The record and its location disagree, so another skill could occupy "
                 "that directory and overwrite this one.",
             )
+
+
+def _check_skill_sources(report: DoctorReport, layout: Layout) -> None:
+    """Validate the source provenance of any skill that claims one.
+
+    ``provenance.x_source`` is written only by the bundle installer, but the
+    record is a plain file a person can edit. This is the read-side half of the
+    same contract: a record claiming a source shape the installer would never
+    have produced is reported, so an unaudited or hand-forged provenance claim
+    cannot pass as a real one.
+
+    A skill with no ``x_source`` is not a finding. Most skills are authored
+    locally and have no external source to declare.
+    """
+    store = SkillStore(layout)
+    # Per-skill isolation: an unreadable record is already reported by the
+    # registry check, and must not stop the remaining skills from being checked.
+    for skill_id in sorted(store.ids()):
+        try:
+            skill = store.get(skill_id)
+        except SkillKernelError:
+            continue
+        declared = skill.provenance.get(SOURCE_FIELD)
+        if declared is None:
+            continue
+        try:
+            validate_x_source(declared, source=skill_id)
+        except SkillKernelError as exc:
+            report.add(ERROR, "skill-source", skill_id, str(exc))

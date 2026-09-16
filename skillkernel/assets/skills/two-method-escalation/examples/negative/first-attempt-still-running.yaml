@@ -1,0 +1,4 @@
+schema_version: 1
+case_id: first-attempt-still-running
+signals: [first-attempt-underway]
+description: Method 1 has not concluded; the budget is not spent.

@@ -1,0 +1,4 @@
+schema_version: 1
+case_id: ambiguous-requirement
+signals: [ambiguous-requirement]
+description: Competing readings would produce materially different systems.

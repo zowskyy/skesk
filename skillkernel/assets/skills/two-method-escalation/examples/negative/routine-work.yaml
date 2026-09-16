@@ -1,0 +1,4 @@
+schema_version: 1
+case_id: routine-work
+signals: [routine-progress]
+description: Ordinary implementation proceeding normally.

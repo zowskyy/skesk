@@ -22,6 +22,7 @@ from skillkernel.core.schema import (
     object_spec,
     str_spec,
     timestamp_spec,
+    validate_value,
 )
 
 
@@ -389,3 +390,41 @@ def test_malformed_spec_kind_fails_loudly_rather_than_passing_silently() -> None
 def test_issue_str_names_the_root_when_the_path_is_empty() -> None:
     schema = make_schema({})
     assert str(schema.issues("not a mapping")[0]).startswith("<root>:")
+
+
+# --- validating a value that is not a document -----------------------------
+#
+# ``Schema`` validates a document and requires a ``schema_version`` at its root.
+# A nested extension block lives inside a record that already carries a version,
+# so giving it a second one would version the same file twice.
+
+
+def test_validate_value_accepts_a_conforming_object() -> None:
+    spec = object_spec({"a": str_spec(required=True)}, required=True)
+    assert validate_value({"a": "x"}, spec, source="test") == {"a": "x"}
+
+
+def test_validate_value_reports_the_same_unknown_field_policy() -> None:
+    spec = object_spec({"a": str_spec(required=True)}, required=True, unknown="reject")
+    with pytest.raises(ValidationError, match="unknown"):
+        validate_value({"a": "x", "b": "y"}, spec, source="test")
+
+
+def test_validate_value_names_the_source_and_the_dotted_path() -> None:
+    spec = object_spec({"inner": object_spec({"n": int_spec(required=True)}, required=True)})
+    with pytest.raises(ValidationError) as exc:
+        validate_value({"inner": {"n": "not an int"}}, spec, source="a record")
+    message = str(exc.value)
+    assert "a record" in message
+    assert "inner.n" in message
+
+
+def test_validate_value_prefixes_the_path_when_one_is_given() -> None:
+    spec = object_spec({"n": int_spec(required=True)}, required=True)
+    with pytest.raises(ValidationError, match=r"provenance\.n"):
+        validate_value({"n": "x"}, spec, source="test", path="provenance")
+
+
+def test_validate_value_does_not_require_a_schema_version() -> None:
+    spec = object_spec({"a": str_spec(required=True)}, required=True)
+    validate_value({"a": "x"}, spec, source="test")

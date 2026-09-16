@@ -207,7 +207,13 @@ have relied on.
   error, not a silent fallback.
 - `core/yamlio.py` — `safe_load` only; records are data and must never be able
   to construct a Python object. Dumps preserve key order for reviewable diffs.
-- `core/paths.py` — fixed layout. `require_inside()` refuses any path escaping
+- `core/paths.py` — fixed layout, and the single path-safety authority
+  (DEC-0017). `validate_component()` holds one canonical grammar and one length
+  bound for every value that becomes a path component, reached through
+  `validate_slug()` and `validate_case_id()`. `require_within(owner, path)`
+  proves a *final destination* sits inside the root that owns it, checking
+  repository containment first so the outermost violated boundary is reported.
+  `require_inside()` refuses any path escaping
   the repository root, so a malformed registry entry cannot direct a write
   outside it.
 - `utils/hashing.py` — canonical JSON (sorted keys, fixed separators) so the
@@ -330,14 +336,40 @@ under two different roots. Lower-level exceptions keep their absolute paths,
 which are what a traceback needs. See
 `docs/decisions/DEC-0012-workspace-independent-doctor-output.md`.
 
-doctor also detects a stored scope/slug mismatch and any location registered to
-more than one skill. It reports and never repairs: enforcement lives at the
-persistence boundary, and a test asserts a corrupted workspace is byte-identical
-after a run.
+doctor also detects a stored scope/slug mismatch, a registered path that is not
+structurally canonical, and any location registered to more than one skill. The
+last two are derived from the *index alone, before any record is read*: a
+malformed path usually makes its own record unreadable, so a load-first ordering
+would skip exactly the entries that are worst — a defect found while writing
+those tests.
+
+The `skill-source` check validates any `provenance.x_source` a record declares,
+against the same spec the installer writes through (DEC-0014). A skill with no
+source block is not a finding.
+
+Each persisted skill is inspected inside its own boundary. A domain error
+becomes that skill's finding and iteration continues; anything else is re-raised
+so the outer guard still records it as an internal error and marks the report
+incomplete. Both skill loops promised this in their comments and neither
+delivered it until a post-VS4 review: one damaged record aborted the loop, the
+finding arrived attributed to the check rather than the skill, and every later
+skill went uninspected. Sixty corruption permutations now assert that no corrupt
+record can suppress another's finding.
+
+It reports and never repairs: enforcement lives at the persistence boundary, and
+a test asserts a corrupted workspace is byte-identical after a run.
+
+**Known limitation, reported not fixed.** `Registry.orphan_record_files()` scans
+`<domain>/records/`, which does not exist for skills — a skill lives in
+`<scope>/<slug>/`. An orphaned *skill* directory left by a genuine I/O
+interruption is therefore invisible to `doctor`. Readers resolve through the
+index, so a partial skill is never *readable*; but the detectability half of
+that guarantee is overstated for skills. See DEC-0015.
 
 ### 2.18 CLI — `skillkernel/cli/`, `skillkernel/__main__.py`
 
-`argparse`, stdlib only. Two commands: `init` and `doctor`.
+`argparse`, stdlib only. Three commands: `init`, `doctor` and
+`skill install <bundle-id>`.
 
 Exit codes are DEC-0010. The CLI is an adapter — it formats and chooses exit
 codes, holding no domain logic — and that is enforced mechanically:
@@ -347,6 +379,10 @@ directly, or catches `BaseException`.
 
 `python -m skillkernel` is a second surface onto the same adapter.
 
+There is no `skill list`, `skill remove`, `skill update` or `skill search`. Each
+would be a command whose behaviour is not yet decided, and a guess encoded in an
+interface is harder to withdraw than one written down.
+
 **Why this exists as its own slice.** At the end of VS1 the repository had 483
 passing tests, clean lint and types, and a clean-checkout reproduction — while
 the command declared in `[project.scripts]` did not run at all, because
@@ -355,25 +391,65 @@ what was installed. The acceptance suite now drives the generated console
 executable through `subprocess`, and a regression test reconstructs a broken
 entry point to prove that check would catch it.
 
+### 2.19 Portable bundles — `skillkernel/bundles/`, `skillkernel/assets/`
+
+A **bundle** is an immutable portable *definition* — never a portable record.
+It carries what a skill tells a consumer to do plus the static cases that let a
+workspace evaluate it, and nothing that a workspace is supposed to earn.
+
+| Module | Responsibility |
+| --- | --- |
+| `model.py` | The bundle schema, the frozen content hash, and the `x_source` spec. Refuses workspace-owned keys by name. |
+| `catalog.py` | Reads and parses through `importlib.resources`. Applies no policy and writes nothing. |
+| `installer.py` | Preflight, refusal policy, and one call each to the existing persistence, provenance and suite authorities. |
+
+The hash was frozen *before* the first bundle existed, so the hashing contract
+is a decision rather than an accident of whatever the first asset contained.
+
+Everything that can fail for a bundle- or policy-related reason runs before the
+first byte is written, including a dry run of the record the installer intends
+to create under a placeholder identifier. A rejected install burns nothing —
+not a directory, not a file, and not an identifier — and every refusal test
+asserts that against a filesystem fingerprint, guarded against the vacuous
+comparison of an empty tree with an empty tree.
+
+The shipped bundle is the universal agent policy (DEC-0008), at
+`skillkernel/assets/skills/two-method-escalation/`. It arrives at `observed`,
+reaches `candidate` through the ordinary gate, and produces its own local
+evaluation evidence. `experimental` stays correctly out of reach: it needs a
+frozen experiment, which a bundle must never ship.
+
+See DEC-0014 (what is portable), DEC-0015 (installation semantics) and DEC-0016
+(packaged resources and the content hash).
+
 ---
 
 ## 3. Verification
 
-596 tests, weighted by risk rather than by count. Negative and adversarial cases
+888 tests, weighted by risk rather than by count. Negative and adversarial cases
 are the majority.
 
 | Area | Tests |
 | --- | --- |
+| Canonical slug grammar (red-team) | 70 |
+| Case-id path boundary (red-team) | 63 |
+| Doctor per-skill isolation | 13 |
+| Registry domain boundary | 16 |
 | Promotion gates (red-team) | 22 |
 | Slice 1 components | 36 |
 | Lifecycle acceptance (end to end) | 4 |
 | CLI boundary acceptance | 15 |
+| Bundle acceptance (built wheel, clean interpreter) | 14 |
+| Bundle catalog and refusals | 32 |
+| Bundle content hash (frozen contract) | 28 |
+| Bundle installer and zero-residue refusals | 26 |
+| Source provenance, write side and read side | 25 |
 | Doctor aggregation and exception boundary | 19 |
 | CLI adapter contract | 17 |
 | Skill location invariant | 42 |
 | Doctor path normalization | 11 |
 | Location acceptance (end to end) | 9 |
-| Schema engine | 68 |
+| Schema engine | 73 |
 | Skill contract and fingerprint | 66 |
 | Maturity state machine | 51 |
 | Experiments | 47 |
@@ -430,13 +506,6 @@ directory asserts a capability that is not there.
   workspace and reporting created versus preserved paths.
 - **CLI** — thin wrappers over the domain APIs. No business logic in command
   handlers. Commands will be added only once the operation beneath them exists.
-- **Bundled core skills** — a small, high-confidence universal set. They will
-  enter at `candidate`, not `validated`, because they carry no repository-local
-  evidence. See `docs/decisions/DEC-0004-bundled-core-skills.md`.
-  The first intended member is the universal agent policy — the two-method
-  escalation rule and its companions — whose text already exists at
-  `docs/policies/universal-agent-rules.md` but which has no installer yet.
-  See `docs/decisions/DEC-0008-universal-agent-policy.md`.
 - **Cross-project promotion** — a discovered skill may become core only after
   independent validation in several distinct projects. Repeated use inside one
   project is not evidence of universality.
