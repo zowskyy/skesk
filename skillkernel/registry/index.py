@@ -22,7 +22,7 @@ sequence are expected and legal, reuse is not.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,7 @@ from skillkernel.core.errors import (
     DuplicateIdError,
     IntegrityError,
     RecordNotFoundError,
+    UnsafeOperationError,
     ValidationError,
 )
 from skillkernel.core.ids import format_id, parse_id
@@ -45,7 +46,13 @@ from skillkernel.core.schema import (
 )
 from skillkernel.core.yamlio import load_yaml_file, write_yaml_file
 
-__all__ = ["INDEX_SCHEMA", "Registry", "RegistryEntry", "RegistryIndex"]
+__all__ = [
+    "INDEX_SCHEMA",
+    "Registry",
+    "RegistryEntry",
+    "RegistryIndex",
+    "identifier_does_not_determine_destination",
+]
 
 INDEX_SCHEMA_VERSION = 1
 
@@ -78,6 +85,19 @@ _INDEX_HEADER = (
     "# Entries are sorted by identifier; 'summary' is denormalized for listings only —\n"
     "# the record file named by 'path' is authoritative.\n"
 )
+
+
+def identifier_does_not_determine_destination(_record_id: str) -> None:
+    """Claim strategy for a domain located by something other than its identifier.
+
+    A skill lives at ``<scope>/<slug>/``, derived from two declared fields rather
+    than from the number it is allocated, so there is nothing for allocation to
+    check. ``SkillStore`` guards that destination earlier, where the scope and
+    slug are known. Stated explicitly rather than left to the default, which
+    would silently check ``skills/records/<ID>.yaml`` -- a path that never
+    exists, and so a guard that always passes while appearing to do work.
+    """
+    return
 
 
 @dataclass(frozen=True)
@@ -121,12 +141,31 @@ class Registry:
         domain_dir: Path,
         id_prefix: str,
         records_subdir: str = "records",
+        record_finder: Callable[[], Iterable[Path]] | None = None,
+        claim_path: Callable[[str], str | None] | None = None,
+        claim_kind: str = "file",
     ) -> None:
         self.layout = layout
         self.kind = kind
         self.domain_dir = domain_dir
         self.id_prefix = id_prefix
         self.records_subdir = records_subdir
+        self.claim_path = claim_path
+        """The canonical path a newly allocated identifier will claim.
+
+        ``None`` means :meth:`default_record_path`, which is what the flat
+        domains write. Experiments claim a directory; skills pass
+        :func:`identifier_does_not_determine_destination`."""
+        self.claim_kind = claim_kind
+        """Whether a claim is a ``file`` or a ``directory``, for the diagnostic."""
+        self.record_finder = record_finder
+        """How this domain's persisted state is found on disk.
+
+        ``None`` means the flat ``<domain>/<records_subdir>/*.yaml`` collection,
+        which is what knowledge, evidence and observations genuinely are. Skills
+        and experiments pass an enumerator from :class:`Layout`, because their
+        state is not a flat collection and assuming it was made their orphans
+        undetectable."""
 
     # --- locations ---------------------------------------------------------
     @property
@@ -138,9 +177,18 @@ class Registry:
         return self.domain_dir / self.records_subdir
 
     def resolve(self, relative_path: str) -> Path:
-        """Resolve an index-relative path, refusing anything outside the repo."""
+        """Resolve an index-relative path, refusing anything outside this domain.
+
+        The boundary is the domain directory, not the repository. Asking only
+        whether the result was in the workspace let an index entry such as
+        ``../skills/core/x.yaml`` redirect one domain's write into another
+        domain's tree -- inside the workspace, and nowhere near where it belongs.
+
+        ``require_within`` still checks repository containment first (DEC-0017),
+        so this narrows the boundary without relaxing it.
+        """
         candidate = self.domain_dir / relative_path
-        return self.layout.require_inside(candidate)
+        return self.layout.require_within(self.domain_dir, candidate)
 
     def relativize(self, path: Path) -> str:
         return Path(path).resolve().relative_to(self.domain_dir.resolve()).as_posix()
@@ -196,10 +244,68 @@ class Registry:
         write_yaml_file(self.index_file, document, header=_INDEX_HEADER)
 
     # --- identifiers -------------------------------------------------------
-    def allocate_id(self) -> str:
-        """Reserve and persist the next identifier for this domain."""
+    def _claimed_destination(self, record_id: str) -> str | None:
+        """The domain-relative path a newly allocated ``record_id`` will claim."""
+        if self.claim_path is None:
+            return self.default_record_path(record_id)
+        return self.claim_path(record_id)
+
+    def require_unowned_path(self, relative: str, *, kind: str, record_id: str) -> None:
+        """Refuse one domain-relative destination that already exists."""
+        destination = self.resolve(relative)
+        if destination.exists() or destination.is_symlink():
+            raise UnsafeOperationError(
+                f"{self.domain_dir.name}/{relative} already exists on disk but no "
+                f"{self.kind} record is registered there. Allocating {record_id} would "
+                f"claim an unmanaged {kind} and overwrite whatever it holds. "
+                "Inspect it and remove it deliberately; nothing has been written."
+            )
+
+    def require_unowned_destination(self, record_id: str) -> None:
+        """Refuse the destination ``record_id`` would claim if something is there.
+
+        The no-adoption rule of DEC-0018, at the boundary where it applies to
+        every domain whose location is derived from its identifier. The skills
+        store proves the same thing about a slug-derived destination before it
+        gets here; this covers the four stores that could not, because their
+        destination does not exist as a question until an identifier is chosen.
+
+        ``exists()`` follows symlinks, so a broken one is asked about separately:
+        it reads as absent and would otherwise be refused later, after the index
+        had already been written.
+        """
+        relative = self._claimed_destination(record_id)
+        if relative is None:
+            return
+        self.require_unowned_path(relative, kind=self.claim_kind, record_id=record_id)
+
+    def allocate_id(self, *, also_claims: Callable[[str], Iterable[str]] | None = None) -> str:
+        """Reserve and persist the next identifier for this domain.
+
+        The destination is proved unowned **first**. The identifier is derived
+        from ``next_sequence`` before the index is written, so the refusal
+        precedes the only mutation here -- which is what makes "before the first
+        mutation and before identifier allocation" true rather than aspirational.
+
+        ``also_claims`` extends the same guarantee to a destination the caller
+        derives from the prospective identifier.
+
+        An interruption cannot produce the state this refuses: the counter is
+        persisted before the record, so an interrupted create orphans a file at
+        an identifier that is never reissued. It is reached by the index moving
+        backwards relative to the records tree -- a partial checkout, revert or
+        restore -- which is an ordinary operation on a repository that is its own
+        system of record.
+        """
         index = self.load_index()
         record_id = format_id(self.id_prefix, index.next_sequence)
+        self.require_unowned_destination(record_id)
+        # A caller whose write lands somewhere the identifier alone does not
+        # determine -- an evidence artifact directory -- claims it here, in the
+        # same breath, so the refusal still precedes the counter. Checking after
+        # allocation would burn an identifier for a write that cannot happen.
+        for relative in () if also_claims is None else also_claims(record_id):
+            self.require_unowned_path(relative, kind="directory", record_id=record_id)
         index.next_sequence += 1
         self._write_index(index)
         return record_id
@@ -300,10 +406,53 @@ class Registry:
         )
         self._write_index(index)
 
-    def orphan_record_files(self) -> list[Path]:
-        """Record files on disk that no index entry points at."""
+    def _flat_record_files(self) -> list[Path]:
+        """The default topology: one directory of ``<ID>.yaml`` files."""
         if not self.records_dir.is_dir():
             return []
+        return sorted(p.resolve() for p in self.records_dir.glob("*.yaml"))
+
+    def orphan_states(self) -> list[Path]:
+        """Persisted state this domain owns that no index entry accounts for.
+
+        A candidate is *owned* when a registered record path is the candidate
+        itself, or lies inside it. That one rule covers every topology in use: a
+        flat record file matches itself; a skill directory is owned by the
+        ``skill.yaml`` within it; an experiment directory is owned by whichever
+        version the index currently names, which is what keeps a revised
+        definition's retained ``v1.yaml`` from being mistaken for an orphan.
+
+        What counts as a candidate is decided by :attr:`record_finder`, so the
+        knowledge of where a domain's files live stays in :class:`Layout` and is
+        never re-derived here or in ``doctor``.
+        """
+        candidates = (
+            self._flat_record_files()
+            if self.record_finder is None
+            else [Path(path).resolve() for path in self.record_finder()]
+        )
+        # Nothing on disk means nothing to attribute, and asking for it early
+        # keeps this answerable for a domain whose index does not exist yet.
+        if not candidates:
+            return []
         registered = {self.path_of(record_id).resolve() for record_id in self.ids()}
-        found = sorted(p.resolve() for p in self.records_dir.glob("*.yaml"))
+        orphans = {
+            path
+            for path in candidates
+            if not any(owner == path or path in owner.parents for owner in registered)
+        }
+        return sorted(orphans)
+
+    def orphan_record_files(self) -> list[Path]:
+        """Orphans in the flat ``<domain>/<records_subdir>/`` collection.
+
+        Retained as the flat-topology case rather than the universal one. Three
+        domains are genuinely flat and this is exactly right for them;
+        :meth:`orphan_states` is the entry point that asks each domain about its
+        own shape.
+        """
+        found = self._flat_record_files()
+        if not found:
+            return []
+        registered = {self.path_of(record_id).resolve() for record_id in self.ids()}
         return [path for path in found if path not in registered]

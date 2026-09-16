@@ -32,7 +32,12 @@ from pathlib import Path
 from typing import Any
 
 from skillkernel.core.clock import now_iso
-from skillkernel.core.errors import IntegrityError, UnsafeOperationError, ValidationError
+from skillkernel.core.errors import (
+    IntegrityError,
+    SkillKernelError,
+    UnsafeOperationError,
+    ValidationError,
+)
 from skillkernel.core.ids import EVIDENCE, parse_id
 from skillkernel.core.paths import Layout
 from skillkernel.evidence.model import EVIDENCE_SCHEMA_VERSION, EvidenceRecord, chain_hash
@@ -41,12 +46,54 @@ from skillkernel.registry import Registry
 from skillkernel.utils.atomic import atomic_write_bytes
 from skillkernel.utils.hashing import canonical_json, sha256_bytes, sha256_file
 
-__all__ = ["EvidenceLedger", "LedgerFinding"]
+__all__ = [
+    "EvidenceLedger",
+    "LedgerFinding",
+    "resolve_declared_artifact",
+]
 
 _HEADER = (
     "# SkillKernel evidence record. Chained to its predecessor: editing this file makes the\n"
     "# ledger fail verification from here onwards. This is tamper evidence, not immutability.\n"
 )
+
+
+ARTIFACT_NAMESPACE = ("evidence", "artifacts")
+"""The two path components every declared artifact must begin with."""
+
+
+def resolve_declared_artifact(layout: Layout, record_id: str, declared: str) -> Path:
+    """Resolve a record's declared artifact, or refuse before touching anything.
+
+    A record is a plain file a person can edit, and its ``artifact.path`` used to
+    be joined onto the repository root and opened. A hand-edited path reaching
+    outside the repository was therefore read and hashed -- and its size reported
+    in a finding -- before the hash comparison refused it. The refusal was
+    correct; getting there by reading someone else's file was not.
+
+    So the shape is checked **lexically first**, with no filesystem access at
+    all: exactly ``evidence/artifacts/<this record>/<one plain name>``. Only a
+    path that survives that is resolved, and then
+    :meth:`Layout.require_within` proves it against the directory that owns it
+    (DEC-0017). Verification and the promotion gate share this one function, so
+    they cannot drift into disagreeing about the boundary.
+    """
+    text = str(declared).replace("\\", "/")
+    parts = tuple(part for part in text.split("/") if part != "")
+    owner = layout.evidence_artifact_dir(record_id)
+    expected = f"{'/'.join(ARTIFACT_NAMESPACE)}/{record_id}/<name>"
+    if (
+        text.startswith("/")
+        or any(part in (".", "..") for part in parts)
+        or len(parts) != len(ARTIFACT_NAMESPACE) + 2
+        or parts[: len(ARTIFACT_NAMESPACE)] != ARTIFACT_NAMESPACE
+        or parts[len(ARTIFACT_NAMESPACE)] != record_id
+    ):
+        raise UnsafeOperationError(
+            f"artifact {declared!r} is not inside {record_id}'s own artifact directory; "
+            f"a declared artifact must be {expected}. Nothing was read."
+        )
+    return layout.require_within(owner, owner / parts[-1])
 
 
 @dataclass(frozen=True)
@@ -134,7 +181,7 @@ class EvidenceLedger:
 
         self._reject_credentials(payload, summary, source_detail, attributes or {})
 
-        record_id = self.registry.allocate_id()
+        record_id = self.registry.allocate_id(also_claims=self._artifact_claims)
         artifact_block: dict[str, Any] | None = None
         if payload is not None:
             assert name is not None
@@ -184,12 +231,25 @@ class EvidenceLedger:
         )
         return record
 
+    def _artifact_claims(self, record_id: str) -> list[str]:
+        """The artifact directory this identifier is about to claim.
+
+        Claimed whether or not an artifact is supplied: the schema allows zero
+        or one, so a record with none owns an *empty* namespace, and a directory
+        already sitting there belongs to nobody.
+        """
+        return [f"artifacts/{record_id}"]
+
     def _artifact_destination(self, record_id: str, name: str) -> Path:
         safe_name = Path(name).name
         if not safe_name or safe_name in {".", ".."}:
             raise UnsafeOperationError(f"invalid artifact name {name!r}")
-        destination = self.layout.evidence_artifacts_dir / record_id / safe_name
-        return self.layout.require_inside(destination)
+        owner = self.layout.evidence_artifact_dir(record_id)
+        # Layer A above makes an escape unconstructible from the name; Layer B
+        # proves the result against the directory that owns it, so neither is a
+        # single point of failure (DEC-0017). The reader asserts the same
+        # boundary through ``resolve_declared_artifact``.
+        return self.layout.require_within(owner, owner / safe_name)
 
     def _reject_credentials(
         self,
@@ -275,7 +335,10 @@ class EvidenceLedger:
         if record.artifact is None:
             return []
         relative = str(record.artifact["path"])
-        path = self.layout.root / relative
+        try:
+            path = resolve_declared_artifact(self.layout, record.id, relative)
+        except SkillKernelError as exc:
+            return [LedgerFinding(record.id, str(exc))]
         if not path.is_file():
             return [LedgerFinding(record.id, f"artifact {relative} is missing")]
         try:
@@ -301,22 +364,90 @@ class EvidenceLedger:
         return findings
 
     def _verify_no_stray_artifacts(self) -> list[LedgerFinding]:
-        """Artifact directories that belong to no registered evidence record."""
+        """The artifact namespace holds exactly what the records declare.
+
+        Closed-world, and deliberately only here. The schema allows zero or one
+        artifact per record, so each record's directory may hold exactly its
+        declared file and a record declaring none may have no directory at all.
+        Anything else -- an extra file, a nested directory, a symlink, a
+        directory nobody owns -- is content hiding inside evidence, and evidence
+        that can hide things is not evidence.
+
+        This is not a filesystem lint rule. It applies to ``evidence/artifacts/``
+        and nowhere else, because that is the one namespace whose entire contents
+        the records are supposed to enumerate. Supporting more than one artifact
+        per record would need a schema change and a decision to match; VS7 does
+        not anticipate one.
+        """
         artifacts_dir = self.layout.evidence_artifacts_dir
         if not artifacts_dir.is_dir():
             return []
-        known = set(self.ids())
+        declared = self._declared_artifacts()
         findings: list[LedgerFinding] = []
         for child in sorted(artifacts_dir.iterdir()):
             if child.name == ".gitkeep":
                 continue
-            if child.name not in known:
+            if child.name not in declared:
                 findings.append(
                     LedgerFinding(
                         child.name,
                         f"evidence/artifacts/{child.name} has no matching evidence record",
                     )
                 )
+                continue
+            findings.extend(self._verify_owned_directory(child, declared[child.name]))
+        return findings
+
+    def _declared_artifacts(self) -> dict[str, str | None]:
+        """Each registered record's declared artifact filename, or None."""
+        declared: dict[str, str | None] = {}
+        for record_id in self.ids():
+            try:
+                record = self.get(record_id)
+            except SkillKernelError:
+                # Already reported by the record checks; do not report twice.
+                declared[record_id] = None
+                continue
+            if record.artifact is None:
+                declared[record_id] = None
+            else:
+                declared[record_id] = Path(str(record.artifact["path"])).name
+        return declared
+
+    def _verify_owned_directory(self, directory: Path, expected: str | None) -> list[LedgerFinding]:
+        record_id = directory.name
+        findings: list[LedgerFinding] = []
+        if not directory.is_dir() or directory.is_symlink():
+            return [
+                LedgerFinding(record_id, f"evidence/artifacts/{record_id} is not a plain directory")
+            ]
+        for entry in sorted(directory.iterdir()):
+            where = f"evidence/artifacts/{record_id}/{entry.name}"
+            if entry.is_symlink():
+                findings.append(LedgerFinding(record_id, f"{where} is a symlink"))
+            elif entry.is_dir():
+                findings.append(
+                    LedgerFinding(record_id, f"{where} is a directory; artifacts are files")
+                )
+            elif entry.name != expected:
+                findings.append(
+                    LedgerFinding(
+                        record_id,
+                        f"{where} is not referenced by {record_id}; an artifact directory "
+                        "holds only the artifact its record declares",
+                    )
+                )
+        if expected is None and not findings and any(directory.iterdir()):
+            findings.append(
+                LedgerFinding(record_id, f"evidence/artifacts/{record_id} has unexpected contents")
+            )
+        if expected is None and not any(directory.iterdir()):
+            findings.append(
+                LedgerFinding(
+                    record_id,
+                    f"evidence/artifacts/{record_id} exists but {record_id} declares no artifact",
+                )
+            )
         return findings
 
     @staticmethod

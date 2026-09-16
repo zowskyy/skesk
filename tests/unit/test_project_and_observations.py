@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+import skillkernel
 from skillkernel.core.config import (
     KernelConfig,
     default_config_document,
@@ -34,7 +35,8 @@ def test_the_default_configuration_is_valid() -> None:
 
 
 def test_configuration_round_trips_through_the_repository(layout: Layout) -> None:
-    assert load_config(layout).kernel_version == "0.1.0-test"
+    """Initialization stamps the real kernel version, not a placeholder."""
+    assert load_config(layout).kernel_version == skillkernel.__version__
 
 
 def test_an_unknown_configuration_section_is_rejected(layout: Layout) -> None:

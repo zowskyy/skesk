@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from skillkernel.core.ids import EVIDENCE, EXPERIMENT, KNOWLEDGE, SKILL
+from skillkernel.core.paths import SKILL_SCOPES
 from skillkernel.core.schema import (
     Schema,
     enum_spec,
@@ -51,7 +52,6 @@ __all__ = [
 
 SKILL_SCHEMA_VERSION = 1
 
-SKILL_SCOPES = ("core", "project", "discovered")
 CONFIDENCE_LEVELS = ("low", "medium", "high")
 CREATED_BY = ("manual", "discovery", "bundled")
 

@@ -60,5 +60,14 @@ class CompilationError(SkillKernelError):
     """Raised when a skill cannot be compiled into a consumable package."""
 
 
+class LocationInvariantError(SkillKernelError):
+    """Raised when a record's declared identity disagrees with where it is stored.
+
+    Distinct from :class:`ValidationError` because the record itself is
+    perfectly valid; what is wrong is the relationship between the record and
+    its location.
+    """
+
+
 class UnsafeOperationError(SkillKernelError):
     """Raised when an operation would overwrite or escape managed state."""

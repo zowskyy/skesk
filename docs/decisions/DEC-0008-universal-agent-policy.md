@@ -1,7 +1,10 @@
 # DEC-0008 — Universal agent policy ships as a bundled core skill
 
-**Status:** Accepted (design). Policy text written; delivery mechanism **not
-implemented**.
+**Status:** Accepted; **implemented in Vertical Slice 4**. The delivery
+mechanism is `skillkernel skill install`, not `skillkernel init` — see DEC-0015,
+which amends the installation trigger and the arrival maturity. The "What is NOT
+implemented" section below is retained as the historical record of the gap and
+no longer describes the current state.
 **Date:** after Milestone 0.
 
 ## Question

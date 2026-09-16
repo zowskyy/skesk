@@ -1,0 +1,4 @@
+schema_version: 1
+case_id: blocked-on-authorization
+signals: [blocked]
+description: An external authorization the agent cannot grant itself.

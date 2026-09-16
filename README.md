@@ -19,15 +19,42 @@ learns a project's engineering methods; it does not contain any project's
 methods itself. The same kernel should serve an animation studio, a website and
 an unrelated future repository while each develops a different skill library.
 
-## Status: Milestone 0 — foundation verified (frozen)
+## Status: Vertical Slice 4 — a skill can be shipped
 
-Frozen at tag **`skillkernel-m0-verified`**. See
-`docs/project/FREEZE-milestone-0.md` for the commit hash, measured results,
-tool versions and restart procedure. Resume work by branching from that tag,
-not by committing onto it.
+The complete research-to-skill workflow now executes through the domain layer
+and is proven by an acceptance test that starts from an empty directory:
 
-The domain layer is implemented, tested and type-checked. **No end-to-end
-vertical slice runs yet**, and there is no command-line interface.
+```
+initialize → knowledge → experiment (define, freeze, measure) → evidence
+→ skill candidate → candidate → experimental → evaluate → validated
+→ reload from disk → verify provenance
+```
+
+A skill proven in one repository can now be *delivered* to another. A bundle is
+an immutable portable **definition** — never a portable record — so an installed
+skill arrives with no identifier, maturity, evidence or history of its own, and
+earns all of them locally:
+
+```
+install → observed → candidate (ordinary gate) → evaluate → local EV- evidence
+experimental: correctly refused, because a bundle cannot ship an experiment
+```
+
+The command line covers the three operations whose behaviour is settled:
+
+```
+skillkernel init <path>                       create a workspace
+skillkernel doctor <path>                     read-only integrity check (--json)
+skillkernel skill install <bundle-id> [path]  install a bundled definition
+```
+
+Other commands remain unimplemented; each arrives only once the operation
+beneath it is proven. In particular there is no `skill list`, `remove`, `update`
+or `search` — an interface is harder to withdraw than a written-down guess.
+
+Milestone 0's foundation is frozen at tag **`skillkernel-m0-verified`** — see
+`docs/project/FREEZE-milestone-0.md` for its commit, measured results and
+restart procedure.
 
 | Subsystem | State |
 | --- | --- |
@@ -39,13 +66,25 @@ vertical slice runs yet**, and there is no command-line interface.
 | Evidence ledger (hash-chained) | Implemented, tested |
 | Observation records | Implemented, tested |
 | Skill contract and maturity state machine | Implemented, tested |
-| Promotion gates, evaluation, discovery, compiler, CLI | **Not implemented** |
+| Workspace initialization | Implemented, tested |
+| Skill storage and append-only promotion history | Implemented, tested |
+| Activation-boundary evaluation | Implemented, tested |
+| Promotion gates and engine | Implemented, tested |
+| Provenance verification | Implemented, tested |
+| Workspace health check (`doctor`) | Implemented, tested |
+| CLI (`init`, `doctor`, `skill install`) | Implemented, tested |
+| Portable bundles (format, content hash, installer) | Implemented, tested |
+| Bundled universal agent policy | Implemented, tested |
+| Bundle upgrade / removal | **Not implemented** — a collision is refused |
+| Discovery, compiler, other CLI commands | **Not implemented** |
 
 `ARCHITECTURE.md` is authoritative on this. Nothing above is inferred from the
 presence of a file or directory.
 
-Measured on the baseline commit: 421 tests passing, ruff clean, mypy clean.
-See `docs/project/baseline-0001.md`.
+Measured: 796 tests passing, ruff clean, mypy clean, reproducible from a clean
+checkout — and, for the bundle, from a **built wheel installed into a fresh
+interpreter that has never seen this repository**. See
+`docs/project/baseline-0001.md` for the frozen Milestone 0 baseline.
 
 ## Development setup
 
@@ -93,10 +132,14 @@ Tests are offline and deterministic. Timestamps are pinned through
 
 ```
 skillkernel/        the kernel (core, registry, knowledge, experiments,
-                    evidence, discovery, skills, project, utils)
-tests/              unit tests; integration and acceptance to follow
+                    evidence, evaluation, promotion, validation, discovery,
+                    skills, bundles, project, utils)
+skillkernel/assets/ portable skill bundles shipped with the package
+tests/unit/         unit tests, weighted toward adversarial paths
+tests/acceptance/   the end-to-end lifecycle proof
 docs/decisions/     design decisions and their rationale
-docs/project/       project profile and baseline records
+docs/policies/      reusable universal agent rules
+docs/project/       project profile, baseline and freeze records
 AGENTS.md           operating instructions for agents
 ARCHITECTURE.md     what is implemented, and what is only planned
 ```
