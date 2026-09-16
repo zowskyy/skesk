@@ -22,7 +22,15 @@ from skillkernel.core.errors import (
     ValidationError,
 )
 
-__all__ = ["CONFIG_FILENAME", "Layout", "find_root", "load_layout"]
+__all__ = [
+    "CONFIG_FILENAME",
+    "HISTORY_FILENAME",
+    "MANAGED_SKILL_ARTIFACTS",
+    "SKILL_FILENAME",
+    "Layout",
+    "find_root",
+    "load_layout",
+]
 
 CONFIG_FILENAME = "skillkernel.yaml"
 
@@ -36,6 +44,23 @@ location-bearing fact has exactly one definition.
 
 SKILL_FILENAME = "skill.yaml"
 """The record file inside every skill directory."""
+
+HISTORY_FILENAME = "history.yaml"
+"""The promotion history beside every skill record.
+
+Defined here beside ``SKILL_FILENAME`` for the same reason ``SKILL_SCOPES`` is:
+it names a file, which makes it a *layout* fact. Consolidating it here is not a
+lifecycle policy -- ``SkillStore`` still owns everything about what the file
+contains and when it is written.
+"""
+
+MANAGED_SKILL_ARTIFACTS = (SKILL_FILENAME, HISTORY_FILENAME)
+"""The files whose presence makes a directory a skill rather than a directory.
+
+``SkillStore.create`` writes the history first and the record second, so a create
+interrupted between them leaves only ``history.yaml``. Both names are therefore
+evidence of managed state, and either one alone is enough.
+"""
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 """The grammar of a canonical skill slug.
@@ -240,6 +265,57 @@ class Layout:
         if not is_canonical_slug(parts[1]):
             return None
         return parts[0], parts[1]
+
+    # --- physical enumeration ----------------------------------------------
+    #
+    # Where a domain's persisted state actually lives, as opposed to where the
+    # index says one record is. This is derivation, so it belongs here with the
+    # rest of it: ``Registry`` consumes these, and ``doctor`` -- an aggregator
+    # that owns no rules -- never learns a filesystem shape.
+
+    def skill_states(self) -> list[Path]:
+        """Every canonical skill directory that physically holds managed state.
+
+        Bounded deliberately. A directory qualifies only if it sits directly
+        under a real scope, its name is a canonical slug, and it contains at
+        least one file from :data:`MANAGED_SKILL_ARTIFACTS`. A malformed name, an
+        empty directory, a loose file and debris nested inside a skill are all
+        excluded, because reporting them would turn ``doctor`` into a filesystem
+        linter rather than a check on managed state.
+
+        ``deprecated`` is absent from :data:`SKILL_SCOPES` and so is not scanned:
+        it is a maturity, not a scope, and no skill is ever written there.
+        """
+        found: list[Path] = []
+        for scope in SKILL_SCOPES:
+            directory = self.skill_scope_dir(scope)
+            if not directory.is_dir():
+                continue
+            for child in sorted(directory.iterdir()):
+                if not child.is_dir() or not is_canonical_slug(child.name):
+                    continue
+                if any((child / name).is_file() for name in MANAGED_SKILL_ARTIFACTS):
+                    found.append(child)
+        return found
+
+    def experiment_definition_states(self) -> list[Path]:
+        """Every physical experiment definition, in both shapes it can take.
+
+        The store writes ``definitions/<EXP-ID>/v<N>.yaml`` and keeps every
+        version, so the unit is the *experiment directory*, not one file: a
+        revision leaves ``v1.yaml`` unreferenced by the index while it remains
+        legitimate, interpretable state that results were recorded against.
+
+        The flat ``definitions/<EXP-ID>.yaml`` shape is included as well. The
+        store never produces it, but it was the only shape the previous
+        enumeration could see, and withdrawing a detection is not a repair.
+        """
+        directory = self.experiments_dir / "definitions"
+        if not directory.is_dir():
+            return []
+        found = {path for path in directory.glob("*.yaml") if path.is_file()}
+        found |= {child for child in directory.iterdir() if any(child.glob("v*.yaml"))}
+        return sorted(found)
 
     def registry_file(self, domain_dir: Path) -> Path:
         return domain_dir / "registry" / "index.yaml"

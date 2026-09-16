@@ -267,12 +267,14 @@ def _check_registry(report: DoctorReport, name: str, registry: Registry) -> None
         except SkillKernelError as exc:
             report.add(ERROR, f"registry:{name}", record_id, str(exc))
 
-    for orphan in registry.orphan_record_files():
+    # Each domain is asked about its own topology. doctor stays an aggregator:
+    # it does not know, and must not learn, where any domain keeps its files.
+    for orphan in registry.orphan_states():
         report.add(
             WARNING,
             f"registry:{name}",
             layout_relative(registry.layout, orphan),
-            "record file is not referenced by the registry index",
+            "managed state on disk is not referenced by the registry index",
         )
 
 

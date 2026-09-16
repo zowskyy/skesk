@@ -25,10 +25,11 @@ from skillkernel.core.clock import now_iso
 from skillkernel.core.errors import (
     LocationInvariantError,
     RecordNotFoundError,
+    UnsafeOperationError,
     ValidationError,
 )
 from skillkernel.core.ids import SKILL
-from skillkernel.core.paths import SKILL_FILENAME, Layout
+from skillkernel.core.paths import HISTORY_FILENAME, SKILL_FILENAME, Layout
 from skillkernel.registry import Registry
 from skillkernel.skills.history import (
     append_transition,
@@ -40,9 +41,7 @@ from skillkernel.skills.history import (
 from skillkernel.skills.model import SKILL_SCOPES, SkillRecord, new_skill_document
 from skillkernel.utils.text import slugify
 
-__all__ = ["SKILL_FILENAME", "SkillStore", "skills_registry"]
-
-HISTORY_FILENAME = "history.yaml"
+__all__ = ["HISTORY_FILENAME", "SKILL_FILENAME", "SkillStore", "skills_registry"]
 
 _HEADER = (
     "# SkillKernel skill record. Authoritative structured truth for this skill.\n"
@@ -71,7 +70,16 @@ EDITABLE_FIELDS = frozenset(
 
 
 def skills_registry(layout: Layout) -> Registry:
-    return Registry(layout, kind="skills", domain_dir=layout.skills_dir, id_prefix=SKILL)
+    return Registry(
+        layout,
+        kind="skills",
+        domain_dir=layout.skills_dir,
+        id_prefix=SKILL,
+        # A skill is a directory under its scope, not a file in a flat records
+        # collection. Without this the registry looked in skills/records/, which
+        # is never created, and so could never report an orphaned skill.
+        record_finder=layout.skill_states,
+    )
 
 
 class SkillStore:
@@ -155,6 +163,10 @@ class SkillStore:
                 f"a {scope} skill with slug {resolved_slug!r} already exists; "
                 "choose a different name or slug"
             )
+        # The index has now had its say. Everything it can see is accounted for,
+        # so what remains is physical state it cannot see -- which must be
+        # refused here, still on the zero-write side of allocate_id().
+        self.require_unowned_destination(scope, resolved_slug)
 
         timestamp = now or now_iso()
         skill_id = self.registry.allocate_id()
@@ -187,6 +199,39 @@ class SkillStore:
         )
         self._persist(record, expect_new=True)
         return record
+
+    def require_unowned_destination(self, scope: str, slug: str) -> Path:
+        """Refuse a canonical destination that exists but that no skill owns.
+
+        The index cannot see an unregistered directory, so ``find_by_slug`` alone
+        was never enough. Creating into one adopted whatever it held: the record
+        and history were overwritten while ``examples/`` survived, and the
+        surviving cases were then globbed into the new skill's evaluation suite.
+        A skill inheriting evidence it did not earn is a provenance failure, not
+        a housekeeping one, so the answer is refusal rather than cleanup.
+
+        Adoption, recovery and repair of orphaned state are deliberately absent.
+        Declaring an unindexed directory to belong to a freshly allocated record
+        needs an explicit protocol with provenance rules of its own; ``create``
+        is not that protocol.
+
+        Called by ``create`` and by the bundle installer's preflight, so both
+        write paths into skill topology enforce one rule rather than two.
+        """
+        directory = self.layout.skill_path(scope, slug).parent
+        # ``exists()`` follows symlinks, so a *broken* one reads as absent. That
+        # let the destination slip past this guard and be refused later by
+        # ``require_inside`` instead -- after ``allocate_id`` had already burned
+        # an identifier, which is exactly the late refusal this exists to
+        # prevent. Found in the red-team pass. ``is_symlink`` does not follow.
+        if directory.exists() or directory.is_symlink():
+            raise UnsafeOperationError(
+                f"{self.layout.relative_skill_path(scope, slug).rsplit('/', 1)[0]} already "
+                "exists on disk but no skill is registered there. Writing there would "
+                "adopt an unmanaged directory. Inspect it and remove it deliberately; "
+                "nothing has been written."
+            )
+        return directory
 
     def _check_location_invariant(self, record: SkillRecord) -> str:
         """Return the canonical path, or raise before anything is written.

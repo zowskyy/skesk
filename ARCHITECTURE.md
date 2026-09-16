@@ -80,13 +80,28 @@ destroying unrelated records.
 
 A logical write touches two files and so cannot be atomic as a unit. The
 **record file is always written first, the index second**. An interruption
-therefore leaves an orphan record file — detectable, and harmless to readers,
-who resolve records through the index. The reverse order would leave the index
-pointing at a file that does not exist.
+therefore leaves an orphan record, harmless to readers, who resolve records
+through the index. The reverse order would leave the index pointing at a file
+that does not exist.
+
+Orphan discovery asks each domain about its own shape (DEC-0018). `Registry`
+takes a record finder: the default is the flat `<domain>/records/` collection
+that knowledge, evidence and observations genuinely are, while skills and
+experiments pass an enumerator from `Layout`. A candidate is *owned* when a
+registered record path is the candidate or lies inside it — one rule that covers
+a flat record file, a skill directory, and an experiment directory whose earlier
+versions a revision deliberately retains. Until VS5 the flat glob was applied
+universally, so an orphaned skill or nested experiment definition was invisible
+while a shape neither store writes was the only one reported.
 
 Detected corruption: orphan records, dangling entries, duplicate identifiers,
 foreign prefixes, a counter that would reuse an identifier, an index declaring
 the wrong kind, and index paths that escape the repository root.
+
+**Known limitation, reported not fixed.** In the record domains an ordinary
+`add()` still overwrites a pre-existing file at the identifier it allocates.
+Reachability is low — the collision needs a replayed identifier rather than a
+caller-chosen name — and `doctor` now reports such a file. See DEC-0018.
 
 ### 2.5 Project profile — `skillkernel/project/profile.py`
 
@@ -265,6 +280,24 @@ one's record and history — destroying its provenance, detected only by a later
 read. Relocation is a future gated operation; `save()` is not it.
 See `docs/decisions/DEC-0011-skill-location-identity.md`.
 
+**A destination is not adopted because it is there.** `require_unowned_destination`
+refuses a canonical location that already exists physically but that no index
+entry owns, before any mutation and before `allocate_id`. `create()` and the
+bundle installer's preflight both call it, so the two write paths into skill
+topology enforce one rule rather than two.
+
+DEC-0011 closed the *indexed* version of the collision; this closes the version
+the index cannot see. Until VS5, creating into an unregistered directory
+overwrote its `skill.yaml` and `history.yaml` while its `examples/` survived —
+and `load_evaluation_suite` globs that directory, so a new skill's suite was
+measured loading four cases where two had been authored, two of them inherited
+from the skill just destroyed. A skill must never inherit evidence it did not
+earn, so the answer is refusal, not cleanup: adoption of orphaned state would
+need an explicit protocol with provenance rules of its own, and `create` is not
+that protocol. `exists()` follows symlinks, so a broken one is checked for
+separately — it read as absent and produced a late refusal after an identifier
+had already been burned. See `docs/decisions/DEC-0018-physical-ownership.md`.
+
 ### 2.14 Evaluation — `skillkernel/evaluation/`
 
 Deterministic, model-free scoring of a skill's activation boundaries.
@@ -359,12 +392,17 @@ record can suppress another's finding.
 It reports and never repairs: enforcement lives at the persistence boundary, and
 a test asserts a corrupted workspace is byte-identical after a run.
 
-**Known limitation, reported not fixed.** `Registry.orphan_record_files()` scans
-`<domain>/records/`, which does not exist for skills — a skill lives in
-`<scope>/<slug>/`. An orphaned *skill* directory left by a genuine I/O
-interruption is therefore invisible to `doctor`. Readers resolve through the
-index, so a partial skill is never *readable*; but the detectability half of
-that guarantee is overstated for skills. See DEC-0015.
+Unowned physical state is reported as a `WARNING`: an unindexed canonical
+`<scope>/<slug>/` directory holding `skill.yaml` or `history.yaml` — the latter
+being exactly what an interrupted create leaves. The definition is bounded, so a
+malformed name, an empty directory, a loose file and debris nested inside a skill
+are not findings; `doctor` reports managed state without an owner, not anything
+unexpected on disk. An orphan stays recoverable and does not fail the gate.
+
+This closed the limitation DEC-0015 recorded, together with the more consequential
+half it did not: creation used to *adopt* such a directory, overwriting its record
+and history while its `examples/` survived to be globbed into the new skill's
+evaluation suite. See DEC-0018.
 
 ### 2.18 CLI — `skillkernel/cli/`, `skillkernel/__main__.py`
 
@@ -426,7 +464,7 @@ See DEC-0014 (what is portable), DEC-0015 (installation semantics) and DEC-0016
 
 ## 3. Verification
 
-888 tests, weighted by risk rather than by count. Negative and adversarial cases
+940 tests, weighted by risk rather than by count. Negative and adversarial cases
 are the majority.
 
 | Area | Tests |

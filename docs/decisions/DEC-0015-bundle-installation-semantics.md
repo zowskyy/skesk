@@ -1,7 +1,7 @@
 # DEC-0015 — Bundle installation semantics
 
 **Status:** Accepted, implemented, tested (Vertical Slice 4).
-**Amends:** DEC-0004, DEC-0008.
+**Amends:** DEC-0004, DEC-0008. **Amended by:** DEC-0018.
 
 ## Decision
 
@@ -112,11 +112,16 @@ path, holds lifecycle policy, or writes a file of its own.
 for skills — a skill lives in `<scope>/<slug>/`. So an orphaned *skill*
 directory, left by a genuine I/O interruption, is invisible to `doctor`.
 
-The safety half of the documented guarantee holds: readers resolve through the
+The index-read claim stated here remains correct: readers resolve through the
 index, so a partial skill is never readable. The detectability half is
 overstated for skills. This is a general `doctor` limitation, not a bundle
 concern, and fixing it inside this slice would hide a storage-layer question
 inside a feature. Recorded here as an independent candidate.
+
+**Amended by DEC-0018.** Calling the first sentence "the safety half" was too
+broad. Index-only reads prevent an orphan from being *read*; they do nothing to
+prevent it being *adopted and partly overwritten* by an ordinary `create`, which
+is what was later measured. Both halves are addressed in Vertical Slice 5.
 
 The installer does mitigate the consequence: it refuses to install into a
 directory that exists but that no skill owns, rather than writing into it.

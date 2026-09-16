@@ -22,7 +22,7 @@ sequence are expected and legal, reuse is not.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -121,12 +121,21 @@ class Registry:
         domain_dir: Path,
         id_prefix: str,
         records_subdir: str = "records",
+        record_finder: Callable[[], Iterable[Path]] | None = None,
     ) -> None:
         self.layout = layout
         self.kind = kind
         self.domain_dir = domain_dir
         self.id_prefix = id_prefix
         self.records_subdir = records_subdir
+        self.record_finder = record_finder
+        """How this domain's persisted state is found on disk.
+
+        ``None`` means the flat ``<domain>/<records_subdir>/*.yaml`` collection,
+        which is what knowledge, evidence and observations genuinely are. Skills
+        and experiments pass an enumerator from :class:`Layout`, because their
+        state is not a flat collection and assuming it was made their orphans
+        undetectable."""
 
     # --- locations ---------------------------------------------------------
     @property
@@ -309,10 +318,53 @@ class Registry:
         )
         self._write_index(index)
 
-    def orphan_record_files(self) -> list[Path]:
-        """Record files on disk that no index entry points at."""
+    def _flat_record_files(self) -> list[Path]:
+        """The default topology: one directory of ``<ID>.yaml`` files."""
         if not self.records_dir.is_dir():
             return []
+        return sorted(p.resolve() for p in self.records_dir.glob("*.yaml"))
+
+    def orphan_states(self) -> list[Path]:
+        """Persisted state this domain owns that no index entry accounts for.
+
+        A candidate is *owned* when a registered record path is the candidate
+        itself, or lies inside it. That one rule covers every topology in use: a
+        flat record file matches itself; a skill directory is owned by the
+        ``skill.yaml`` within it; an experiment directory is owned by whichever
+        version the index currently names, which is what keeps a revised
+        definition's retained ``v1.yaml`` from being mistaken for an orphan.
+
+        What counts as a candidate is decided by :attr:`record_finder`, so the
+        knowledge of where a domain's files live stays in :class:`Layout` and is
+        never re-derived here or in ``doctor``.
+        """
+        candidates = (
+            self._flat_record_files()
+            if self.record_finder is None
+            else [Path(path).resolve() for path in self.record_finder()]
+        )
+        # Nothing on disk means nothing to attribute, and asking for it early
+        # keeps this answerable for a domain whose index does not exist yet.
+        if not candidates:
+            return []
         registered = {self.path_of(record_id).resolve() for record_id in self.ids()}
-        found = sorted(p.resolve() for p in self.records_dir.glob("*.yaml"))
+        orphans = {
+            path
+            for path in candidates
+            if not any(owner == path or path in owner.parents for owner in registered)
+        }
+        return sorted(orphans)
+
+    def orphan_record_files(self) -> list[Path]:
+        """Orphans in the flat ``<domain>/<records_subdir>/`` collection.
+
+        Retained as the flat-topology case rather than the universal one. Three
+        domains are genuinely flat and this is exactly right for them;
+        :meth:`orphan_states` is the entry point that asks each domain about its
+        own shape.
+        """
+        found = self._flat_record_files()
+        if not found:
+            return []
+        registered = {self.path_of(record_id).resolve() for record_id in self.ids()}
         return [path for path in found if path not in registered]

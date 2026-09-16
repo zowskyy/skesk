@@ -26,7 +26,7 @@ from typing import Any
 from skillkernel.bundles.catalog import load_bundle
 from skillkernel.bundles.model import SOURCE_FIELD, Bundle, validate_x_source
 from skillkernel.core.clock import now_iso
-from skillkernel.core.errors import UnsafeOperationError, ValidationError
+from skillkernel.core.errors import ValidationError
 from skillkernel.core.ids import SKILL, format_id
 from skillkernel.core.paths import Layout, validate_case_id
 from skillkernel.evaluation.suite import write_evaluation_suite
@@ -130,14 +130,9 @@ def preflight(layout: Layout, bundle: Bundle) -> InstallPlan:
 
     # A directory left behind by an interrupted write is not in the index, so no
     # index check can see it. Writing into it would silently adopt whatever it
-    # contains, so it is refused and reported rather than reused.
-    directory = layout.skill_path(scope, bundle.slug).parent
-    if directory.exists():
-        raise UnsafeOperationError(
-            f"{relative_path.rsplit('/', 1)[0]} already exists on disk but no skill is "
-            "registered there. Installing would write into an unmanaged directory. "
-            "Inspect it and remove it deliberately; nothing has been written."
-        )
+    # contains. The rule now lives on the store, because ordinary creation needs
+    # exactly the same refusal and two copies of it would be two policies.
+    store.require_unowned_destination(scope, bundle.slug)
 
     _dry_run(bundle, scope, definition, source)
     _check_case_ids(bundle)

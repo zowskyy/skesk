@@ -54,6 +54,9 @@ class ExperimentStore:
             domain_dir=layout.experiments_dir,
             id_prefix=EXPERIMENT,
             records_subdir="definitions",
+            # A definition is <EXP-ID>/v<N>.yaml, a directory deep. The flat glob
+            # this replaces could only see a shape the store never writes.
+            record_finder=layout.experiment_definition_states,
         )
 
     # --- locations ---------------------------------------------------------
