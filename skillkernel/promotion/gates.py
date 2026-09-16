@@ -32,7 +32,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from skillkernel.core.config import KernelConfig
+from skillkernel.core.errors import SkillKernelError
 from skillkernel.core.paths import Layout
+from skillkernel.evaluation.runner import INPUT_DIGEST_ATTRIBUTE
+from skillkernel.evaluation.suite import evaluation_input_digest
 from skillkernel.evidence.ledger import EvidenceLedger
 from skillkernel.experiments.store import ExperimentStore
 from skillkernel.knowledge.store import KnowledgeStore
@@ -41,9 +44,31 @@ from skillkernel.skills.model import SkillRecord
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from skillkernel.evidence.model import EvidenceRecord
 
-__all__ = ["GateReport", "check_gate", "passing_evaluations"]
+__all__ = [
+    "EVIDENCE_BACKED_MATURITIES",
+    "GateReport",
+    "check_gate",
+    "current_input_digest",
+    "passing_evaluations",
+]
 
 EVALUATION_KIND = "evaluation_report"
+
+EVIDENCE_BACKED_MATURITIES = ("validated", "trusted")
+"""Maturities whose standing rests on evaluation evidence."""
+
+
+def current_input_digest(layout: Layout, skill_id: str) -> str | None:
+    """The digest of the inputs this skill would be evaluated against now.
+
+    ``None`` when it cannot be computed -- a missing, malformed or empty suite.
+    That is not an error here: it is the absence of proof, and every caller
+    treats it as *not current* rather than skipping the check.
+    """
+    try:
+        return evaluation_input_digest(layout, skill_id)
+    except SkillKernelError:
+        return None
 
 
 @dataclass
@@ -88,13 +113,23 @@ def passing_evaluations(
     an evaluation of a procedure that has since been rewritten does not count.
     """
     fingerprint = skill.fingerprint()
+    digest = current_input_digest(layout, skill.id) if current_only else None
     found: list[EvidenceRecord] = []
     for record in EvidenceLedger(layout).for_skill(skill.id):
         if record.kind != EVALUATION_KIND:
             continue
         if str(record.attributes.get("verdict")) != "pass":
             continue
-        if current_only and record.skill_fingerprint != fingerprint:
+        if not current_only:
+            found.append(record)
+            continue
+        if record.skill_fingerprint != fingerprint:
+            continue
+        # The second dimension. A matching fingerprint says the evaluation is
+        # still about this skill; it says nothing about what it was measured
+        # against, which is how a deleted guardrail corpus kept counting.
+        recorded = record.attributes.get(INPUT_DIGEST_ATTRIBUTE)
+        if not recorded or digest is None or str(recorded) != digest:
             continue
         found.append(record)
     return found

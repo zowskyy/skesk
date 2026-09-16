@@ -23,6 +23,7 @@ from skillkernel.core.clock import is_timestamp
 from skillkernel.core.errors import ValidationError
 
 __all__ = [
+    "EXTENSION_PREFIX",
     "Issue",
     "Schema",
     "Spec",
@@ -52,7 +53,13 @@ UnknownPolicy = Literal["reject", "allow_extension", "allow"]
     fingerprints.
 """
 
-_EXTENSION_PREFIX = "x_"
+EXTENSION_PREFIX = "x_"
+"""Prefix marking a forward-compatible extension key.
+
+Public so that anything hashing or comparing a document can recognise an
+extension without hard-coding the literal a second time."""
+
+_EXTENSION_PREFIX = EXTENSION_PREFIX
 
 
 @dataclass(frozen=True)

@@ -20,13 +20,31 @@ from typing import Any
 from skillkernel.core.clock import now_iso
 from skillkernel.core.paths import Layout
 from skillkernel.evaluation.scorer import ScoreBreakdown, score_activation
-from skillkernel.evaluation.suite import EvaluationSuite, load_evaluation_suite
+from skillkernel.evaluation.suite import (
+    EvaluationSuite,
+    evaluation_input_digest,
+    load_evaluation_suite,
+)
 from skillkernel.evidence.ledger import EvidenceLedger
 
-__all__ = ["EVALUATION_EVIDENCE_KIND", "EvaluationReport", "evaluate_skill"]
+__all__ = [
+    "EVALUATION_EVIDENCE_KIND",
+    "INPUT_DIGEST_ATTRIBUTE",
+    "EvaluationReport",
+    "evaluate_skill",
+]
 
 EVALUATION_EVIDENCE_KIND = "evaluation_report"
-REPORT_SCHEMA_VERSION = 1
+REPORT_SCHEMA_VERSION = 2
+"""Version 2 adds ``evaluation_input_digest``.
+
+Version 1 artifacts are never rewritten. They stay valid, readable JSON and keep
+verifying against their recorded hash; they simply cannot prove which inputs
+produced them, which is why they do not satisfy ``current_only``.
+"""
+
+INPUT_DIGEST_ATTRIBUTE = "evaluation_input_digest"
+"""Evidence attribute the promotion gate reads. Named once, here."""
 
 
 @dataclass(frozen=True)
@@ -36,6 +54,7 @@ class EvaluationReport:
     verdict: str
     breakdown: ScoreBreakdown
     skill_fingerprint: str
+    evaluation_input_digest: str
     evaluated_at: str
     pass_threshold: float
     max_false_activation_rate: float
@@ -76,6 +95,7 @@ class EvaluationReport:
             "scorer": "activation-boundary",
             "evaluated_at": self.evaluated_at,
             "skill_fingerprint": self.skill_fingerprint,
+            "evaluation_input_digest": self.evaluation_input_digest,
             "thresholds": {
                 "pass_threshold": self.pass_threshold,
                 "max_false_activation_rate": self.max_false_activation_rate,
@@ -124,6 +144,10 @@ def evaluate_skill(
 
     skill = SkillStore(layout).require(skill_id)
     suite = load_evaluation_suite(layout, skill_id)
+    # Identify what is being consumed, at the moment it is consumed. Recording
+    # it afterwards from the filesystem would describe a state that may already
+    # have moved on.
+    input_digest = evaluation_input_digest(layout, skill_id)
     breakdown = score_activation(skill, suite.cases)
     verdict, reasons = derive_verdict(breakdown, suite)
 
@@ -133,6 +157,7 @@ def evaluate_skill(
         verdict=verdict,
         breakdown=breakdown,
         skill_fingerprint=skill.fingerprint(),
+        evaluation_input_digest=input_digest,
         evaluated_at=now or now_iso(),
         pass_threshold=suite.pass_threshold,
         max_false_activation_rate=suite.max_false_activation_rate,
@@ -158,6 +183,7 @@ def evaluate_skill(
         attributes={
             "verdict": verdict,
             "corpus_id": suite.corpus_id,
+            INPUT_DIGEST_ATTRIBUTE: input_digest,
             "accuracy": round(breakdown.accuracy, 6),
             "true_positives": breakdown.true_positives,
             "true_negatives": breakdown.true_negatives,
@@ -173,6 +199,7 @@ def evaluate_skill(
         verdict=report.verdict,
         breakdown=report.breakdown,
         skill_fingerprint=report.skill_fingerprint,
+        evaluation_input_digest=report.evaluation_input_digest,
         evaluated_at=report.evaluated_at,
         pass_threshold=report.pass_threshold,
         max_false_activation_rate=report.max_false_activation_rate,

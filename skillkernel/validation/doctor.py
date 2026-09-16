@@ -38,10 +38,16 @@ from skillkernel.core.config import load_config
 from skillkernel.core.errors import SkillKernelError
 from skillkernel.core.paths import Layout
 from skillkernel.discovery.observations import ObservationStore
+from skillkernel.evaluation.runner import INPUT_DIGEST_ATTRIBUTE
 from skillkernel.evidence.ledger import EvidenceLedger
 from skillkernel.experiments.store import ExperimentStore
 from skillkernel.knowledge.store import KnowledgeStore
 from skillkernel.project.profile import load_profile
+from skillkernel.promotion.gates import (
+    EVIDENCE_BACKED_MATURITIES,
+    current_input_digest,
+    passing_evaluations,
+)
 from skillkernel.registry import Registry
 from skillkernel.skills.history import history_issues
 from skillkernel.skills.store import SkillStore, skills_registry
@@ -238,6 +244,7 @@ def run_doctor(layout: Layout) -> DoctorReport:
     check("skills")(lambda: _check_skills(report, layout))
     check("skill-location")(lambda: _check_skill_locations(report, layout))
     check("skill-source")(lambda: _check_skill_sources(report, layout))
+    check("evaluation-input")(lambda: _check_evaluation_inputs(report, layout))
 
     return report
 
@@ -423,6 +430,62 @@ def _check_skill_locations(report: DoctorReport, layout: Layout) -> None:
                 "The record and its location disagree, so another skill could occupy "
                 "that directory and overwrite this one.",
             )
+
+
+def _check_evaluation_inputs(report: DoctorReport, layout: Layout) -> None:
+    """Report a skill whose passing evaluations can no longer name their inputs.
+
+    The unit is the *skill*, not the record. A stale or legacy evaluation is not
+    itself a defect -- it is immutable history, and history is allowed to
+    describe inputs that have since changed. What matters is whether anything
+    current stands beside it. So a skill with a current passing evaluation is
+    clean however many superseded records it also holds, and re-evaluating is
+    what clears the finding rather than editing or deleting anything.
+    """
+    store = SkillStore(layout)
+    for skill_id in sorted(store.ids()):
+        _guarded_skill(report, "evaluation-input", skill_id)(
+            partial(_check_one_evaluation_input, report, store, layout, skill_id)
+        )
+
+
+def _check_one_evaluation_input(
+    report: DoctorReport, store: SkillStore, layout: Layout, skill_id: str
+) -> None:
+    skill = store.get(skill_id)
+    historical = passing_evaluations(layout, skill, current_only=False)
+    if not historical:
+        # A skill that has never been evaluated is not in an inconsistent state.
+        return
+    if passing_evaluations(layout, skill):
+        return
+
+    digest = current_input_digest(layout, skill_id)
+    if digest is None:
+        code = "evaluation-input:unreadable"
+        message = (
+            "has passing evaluation evidence, but its evaluation inputs cannot be read, so "
+            "no evaluation can be shown to describe them. Repair the suite and re-evaluate."
+        )
+    elif any(record.attributes.get(INPUT_DIGEST_ATTRIBUTE) for record in historical):
+        code = "evaluation-input:mismatch"
+        message = (
+            "has no passing evaluation matching the evaluation inputs now on disk; the "
+            "corpus or its configuration changed after the evaluation ran. Re-evaluate to "
+            "restore current evidence. The earlier evidence stays as history."
+        )
+    else:
+        code = "evaluation-input:legacy"
+        message = (
+            "has passing evaluation evidence recorded before evaluation inputs were "
+            "identified, so it cannot establish which inputs produced it. Re-evaluate to "
+            "restore current evidence. The earlier evidence stays as history."
+        )
+
+    # Severity follows consequence, not age: a promoted skill's standing rests on
+    # this evidence, while a younger skill is merely being told to re-run first.
+    severity = ERROR if skill.maturity in EVIDENCE_BACKED_MATURITIES else WARNING
+    report.add(severity, code, skill_id, message)
 
 
 def _check_skill_sources(report: DoctorReport, layout: Layout) -> None:
